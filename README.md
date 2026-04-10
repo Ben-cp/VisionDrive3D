@@ -1,3 +1,5 @@
+# VisionDrive3D
+
 # BTL Computer Graphics — Bộ sinh ảnh tổng hợp cho AI
 
 Dự án môn **Đồ họa máy tính (Computer Graphics)**: xây dựng pipeline **render cảnh 3D** để tạo **ảnh tổng hợp** (synthetic images) phục vụ huấn luyện/đánh giá AI.
@@ -171,4 +173,3 @@ File chính:
   - attribute locations yêu cầu
   - uniform names cần upload
 - Mọi module mới nên bám theo pattern `setup/draw` để `viewer` có thể dùng trực tiếp.
-
