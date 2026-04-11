@@ -143,13 +143,57 @@ class Viewer:
 
 
 def main():
-    viewer = Viewer()
+    # viewer = Viewer()
+    # base_dir = os.path.dirname(os.path.abspath(__file__))
+
+    # # NOTE: Put `car.obj` in the same folder as this file: `BTL2/car.obj`
+    # car = Mesh(os.path.join(base_dir, "assets/car.obj")).setup()
+    # viewer.add(car)
+
+    # viewer.run()
+    
+    
+    
+    
+    ##### code dưới đây mô tả cơ bản quá trình sẽ render tuần tự 
+    ##### từng chức năng dựa trên các assets có sẵn và chưa tự động hoá quá trình tạo synthetic dataset
+    viewer = Viewer(width=800, height=800)
     base_dir = os.path.dirname(os.path.abspath(__file__))
-
-    # NOTE: Put `car.obj` in the same folder as this file: `BTL2/car.obj`
-    car = Mesh(os.path.join(base_dir, "assets/car.obj")).setup()
-    viewer.add(car)
-
+    
+    car_mesh = Mesh(os.path.join(base_dir, "assets/car.obj")).setup()
+    
+    from entity import Scene, Entity
+    scene = Scene()
+    
+    car1 = Entity(mesh=car_mesh, class_id=0, instance_color=(1.0, 0.0, 0.0))
+    car1.set_transform(position=(0, 0, 0), scale=(1, 1, 1))
+    
+    car2 = Entity(mesh=car_mesh, class_id=0, instance_color=(0.0, 1.0, 0.0))
+    car2.set_transform(positionn=(3.0, 0, -2.0), scale=(1, 1, 1))
+    
+    scene.add_entity(car1)
+    scene.add_entity(car2)
+    
+    from renderers import RendererManager
+    render_manager = RendererManager(scene)
+    
+    def custom_key_callback(win, key, scancode, action, mods):
+        if action == glfw.PRESS:
+            if key == glfw.KEY_1:
+                render_manager.set_mode("RGB")
+            elif key == glfw.KEY_2:
+                render_manager.set_mode("DEPTH")
+            elif key == glfw.KEY_3:
+                render_manager.set_mode("MASK")
+            elif key == glfw.KEY_4:
+                render_manager.toggle_bbox_visualization()
+            elif key == glfw.KEY_P:
+                render_manager.export_current_frame()
+        viewer.on_key(win, key, scancode, action, mods)
+        
+    glfw.set_key_callback(viewer.win, custom_key_callback)
+    
+    viewer.add(render_manager)
     viewer.run()
 
 
