@@ -21,10 +21,33 @@ class RGBRenderer:
     def render(self, scene, projection: np.ndarray, view: np.ndarray):
         GL.glUseProgram(self.shader.render_idx)
         uma = UManager(self.shader)
-        LightingManager(uma).setup_phong()
+
+        # Neutral light/material controls to avoid color cast in RGB output.
+        uma.upload_uniform_vector3fv(np.array([1.0, 1.0, 1.0], dtype=np.float32), "light_color")
+        uma.upload_uniform_vector3fv(np.array([0.0, 8.0, 5.0], dtype=np.float32), "light_pos")
+        uma.upload_uniform_scalar1f(64.0, "shininess")
+        uma.upload_uniform_scalar1f(0.28, "ambient_strength")
+        uma.upload_uniform_scalar1f(0.35, "specular_strength")
 
         for ent in scene.entities:
+            if getattr(ent.mesh, "has_texture", False) and getattr(ent.mesh, "texture_id", None):
+                GL.glActiveTexture(GL.GL_TEXTURE0)
+                GL.glBindTexture(GL.GL_TEXTURE_2D, ent.mesh.texture_id)
+                uma.upload_uniform_scalar1i(0, "diffuse_map")
+                uma.upload_uniform_scalar1i(1, "has_texture")
+            else:
+                GL.glActiveTexture(GL.GL_TEXTURE0)
+                GL.glBindTexture(GL.GL_TEXTURE_2D, 0)
+                uma.upload_uniform_scalar1i(0, "has_texture")
+
+            # For non-textured meshes, default to vertex/material color from mesh.
+            uma.upload_uniform_scalar1i(0, "use_uniform_base_color")
+            uma.upload_uniform_vector3fv(np.array([1.0, 1.0, 1.0], dtype=np.float32), "base_color")
+
             ent.mesh.draw(projection, view, ent.world_matrix(), self.shader)
+
+        GL.glActiveTexture(GL.GL_TEXTURE0)
+        GL.glBindTexture(GL.GL_TEXTURE_2D, 0)
 
 
 class MaskRenderer:

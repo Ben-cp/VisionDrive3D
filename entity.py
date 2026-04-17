@@ -1,6 +1,6 @@
 # entity.py
 import math
-from typing import List, Optional, Tuple, Iterable
+from typing import List, Optional, Tuple
 
 import glfw
 import numpy as np
@@ -186,57 +186,173 @@ class Scene:
 
         return hit_y
 
-    def randomize_domain(
+    def spawn_cars_on_lanes(
         self,
-        ground_y: float = 0.0,
-        x_range: Tuple[float, float] = (-8.0, 8.0),
-        z_range: Tuple[float, float] = (-35.0, 8.0),
-        scale_range: Tuple[float, float] = (0.85, 1.20),
-        yaw_range: Tuple[float, float] = (0.0, 360.0),
-        sat_padding: float = 0.15,
-        max_retry: int = 80,
+        lanes_config: List[dict],
+        num_cars: Optional[int] = None,
+        scale_range: Tuple[float, float] = (0.9, 1.15),
+        lateral_jitter_default: float = 0.25,
+        sat_padding: float = 0.12,
+        same_lane_safe_distance: float = 2.8,
+        max_retry_per_car: int = 60,
     ):
         """
-        Domain randomization for dynamic vehicles.
-        Use SAT overlap test on 2D AABB in XZ plane to avoid spawning collisions.
+        Lane-based spawning for dynamic cars.
+
+        Each lane dict supports:
+            {
+                "x_center": float,
+                "z_min": float,
+                "z_max": float,
+                "direction": [dx, dy, dz],
+                "ground_y": 0.05,
+                "x_jitter": 0.2,
+                "safe_z": 3.0
+            }
+
+        This method fixes: wrong orientation, building collision risk, car overlap,
+        and ground alignment via place_on_surface(bottom_y_offset).
         """
-        placed: List[Tuple[np.ndarray, np.ndarray]] = []  # (aabb_min_xz, aabb_max_xz)
+        if not lanes_config:
+            return
 
-        for ent in self.get_dynamic_entities():
-            placed_ok = False
+        cars_all = self.get_dynamic_entities()
+        if num_cars is None:
+            cars = cars_all
+        else:
+            cars = cars_all[: max(0, int(num_cars))]
+        if not cars:
+            return
 
-            # Random object variation
-            uniform_scale = float(np.random.uniform(scale_range[0], scale_range[1]))
-            ent.scale[:] = np.array([uniform_scale, uniform_scale, uniform_scale], dtype=np.float32)
-            ent.rotation[1] = float(np.random.uniform(yaw_range[0], yaw_range[1]))
+        # Per-lane placement state for optimized collision tests.
+        lane_z_used: dict[int, List[float]] = {idx: [] for idx in range(len(lanes_config))}
+        lane_aabbs: dict[int, List[Tuple[np.ndarray, np.ndarray]]] = {idx: [] for idx in range(len(lanes_config))}
 
-            for _ in range(max_retry):
-                tx = float(np.random.uniform(x_range[0], x_range[1]))
-                tz = float(np.random.uniform(z_range[0], z_range[1]))
-                gy = self.raycast_ground_height(tx, tz, default_y=ground_y)
-                ent.place_on_surface(tx, tz, gy)
+        for car in cars:
+            spawned = False
 
-                mn, mx = ent.world_aabb_xz(padding=sat_padding)
+            # Slight scale variation while keeping realistic vehicle proportions.
+            s = float(np.random.uniform(scale_range[0], scale_range[1]))
+            car.scale[:] = np.array([s, s, s], dtype=np.float32)
 
+            for _ in range(max_retry_per_car):
+                # Randomly choose a lane for this spawn attempt.
+                lane_idx = int(np.random.choice(len(lanes_config)))
+                lane = lanes_config[lane_idx]
+
+                x_center = float(lane.get("x_center", 0.0))
+                z_min = float(lane.get("z_min", -30.0))
+                z_max = float(lane.get("z_max", 5.0))
+                ground_y = float(lane.get("ground_y", 0.05))
+                x_jitter = float(lane.get("x_jitter", lateral_jitter_default))
+                safe_z = float(lane.get("safe_z", same_lane_safe_distance))
+
+                direction = np.asarray(lane.get("dir", lane.get("direction", [0.0, 0.0, -1.0])), dtype=np.float32)
+                if direction.shape[0] < 3:
+                    direction = np.array([0.0, 0.0, -1.0], dtype=np.float32)
+
+                # Convert lane direction to yaw around global Y.
+                # Local +Z of car aligns to lane direction projected on XZ.
+                dir_x = float(direction[0])
+                dir_z = float(direction[2])
+                if abs(dir_x) < 1e-6 and abs(dir_z) < 1e-6:
+                    dir_z = -1.0
+                yaw_deg = math.degrees(math.atan2(dir_x, dir_z))
+                car.rotation[1] = float(yaw_deg)
+
+                tx = x_center + float(np.random.uniform(-x_jitter, x_jitter))
+                tz = float(np.random.uniform(min(z_min, z_max), max(z_min, z_max)))
+
+                # Same-lane longitudinal spacing constraint.
+                if any(abs(tz - used_z) < safe_z for used_z in lane_z_used[lane_idx]):
+                    continue
+
+                # Bottom of local AABB is offset to exactly touch lane ground.
+                car.place_on_surface(tx, tz, ground_y)
+
+                # SAT check only with cars already in the same lane.
+                mn, mx = car.world_aabb_xz(padding=sat_padding)
                 overlap = False
-                for pmn, pmx in placed:
+                for pmn, pmx in lane_aabbs[lane_idx]:
                     if _sat_aabb_overlap_xz(mn, mx, pmn, pmx):
                         overlap = True
                         break
+                if overlap:
+                    continue
 
-                if not overlap:
-                    placed.append((mn, mx))
-                    placed_ok = True
-                    break
+                lane_aabbs[lane_idx].append((mn, mx))
+                lane_z_used[lane_idx].append(tz)
+                spawned = True
+                break
 
-            if not placed_ok:
-                # Keep object but move out of camera frustum if no slot found.
-                ent.position[:] = np.array([9999.0, -9999.0, 9999.0], dtype=np.float32)
+            if not spawned:
+                # Move far away when no valid lane slot is available.
+                car.position[:] = np.array([9999.0, -9999.0, 9999.0], dtype=np.float32)
+
+    def randomize_domain(
+        self,
+        ground_y: float = 0.05,
+        x_range: Tuple[float, float] = (-8.0, 8.0),
+        z_range: Tuple[float, float] = (-35.0, 8.0),
+        scale_range: Tuple[float, float] = (0.9, 1.15),
+        sat_padding: float = 0.12,
+        max_retry: int = 60,
+    ):
+        """
+        Compatibility wrapper: internally uses lane-based spawning.
+        """
+        lanes = [
+            {
+                "x_center": -3.5,
+                "z_min": z_range[0],
+                "z_max": z_range[1],
+                "direction": [0.0, 0.0, -1.0],
+                "ground_y": ground_y,
+                "x_jitter": 0.28,
+                "safe_z": 3.2,
+            },
+            {
+                "x_center": -1.8,
+                "z_min": z_range[0],
+                "z_max": z_range[1],
+                "direction": [0.0, 0.0, -1.0],
+                "ground_y": ground_y,
+                "x_jitter": 0.25,
+                "safe_z": 3.0,
+            },
+            {
+                "x_center": 1.8,
+                "z_min": z_range[0],
+                "z_max": z_range[1],
+                "direction": [0.0, 0.0, 1.0],
+                "ground_y": ground_y,
+                "x_jitter": 0.25,
+                "safe_z": 3.0,
+            },
+            {
+                "x_center": 3.5,
+                "z_min": z_range[0],
+                "z_max": z_range[1],
+                "direction": [0.0, 0.0, 1.0],
+                "ground_y": ground_y,
+                "x_jitter": 0.28,
+                "safe_z": 3.2,
+            },
+        ]
+        self.spawn_cars_on_lanes(
+            lanes_config=lanes,
+            num_cars=len(self.get_dynamic_entities()),
+            scale_range=scale_range,
+            sat_padding=sat_padding,
+            max_retry_per_car=max_retry,
+        )
 
 
 class Camera(Node):
     """
-    Fly camera (WASD + mouse look) + ground-follow with raycast + lerp.
+    Fly camera (WASD + mouse look + E/Q/C vertical controls).
+
+    Ground-follow can be enabled for road-locked mode; default is noclip.
     """
 
     def __init__(
@@ -261,6 +377,7 @@ class Camera(Node):
 
         self.eye_height = 1.7
         self.ground_follow_lerp = 9.0
+        self.enable_ground_follow = False
 
     def _update_front(self):
         yaw_r = math.radians(self.yaw)
@@ -290,7 +407,7 @@ class Camera(Node):
         if rnorm > 1e-8:
             right = right / rnorm
 
-        # WASD in XZ plane, vertical handled by ground alignment.
+        # WASD in XZ plane.
         forward_flat = np.array([self.front[0], 0.0, self.front[2]], dtype=np.float32)
         fnorm = np.linalg.norm(forward_flat)
         if fnorm > 1e-8:
@@ -305,12 +422,21 @@ class Camera(Node):
         if glfw.get_key(window, glfw.KEY_D) == glfw.PRESS:
             self.position += right * v
 
+        # 6-DOF vertical movement on global Y axis.
+        if glfw.get_key(window, glfw.KEY_E) == glfw.PRESS:
+            self.position[1] += v
+        if glfw.get_key(window, glfw.KEY_Q) == glfw.PRESS or glfw.get_key(window, glfw.KEY_C) == glfw.PRESS:
+            self.position[1] -= v
+
     def update_ground_alignment(self, scene: Scene, dt: float):
         """
         Raycast + lerp:
         - sample ground height under current camera XZ
         - lerp current Y toward (ground + eye_height)
         """
+        if not self.enable_ground_follow:
+            return
+
         ground_y = scene.raycast_ground_height(
             float(self.position[0]),
             float(self.position[2]),

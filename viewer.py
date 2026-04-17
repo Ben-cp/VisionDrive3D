@@ -284,6 +284,15 @@ class ViewerApp:
 
         self._load_scene_assets(base_dir)
 
+    @staticmethod
+    def _default_lanes_config() -> list[dict]:
+        return [
+            {"x_center": -3.5, "z_min": -42.0, "z_max": 10.0, "direction": [0.0, 0.0, -1.0], "ground_y": 0.05, "x_jitter": 0.28, "safe_z": 3.2},
+            {"x_center": -1.8, "z_min": -42.0, "z_max": 10.0, "direction": [0.0, 0.0, -1.0], "ground_y": 0.05, "x_jitter": 0.22, "safe_z": 3.0},
+            {"x_center": 1.8, "z_min": -42.0, "z_max": 10.0, "direction": [0.0, 0.0, 1.0], "ground_y": 0.05, "x_jitter": 0.22, "safe_z": 3.0},
+            {"x_center": 3.5, "z_min": -42.0, "z_max": 10.0, "direction": [0.0, 0.0, 1.0], "ground_y": 0.05, "x_jitter": 0.28, "safe_z": 3.2},
+        ]
+
     def _load_scene_assets(self, base_dir: str):
         # 1) Static environment (do not randomize its transform)
         street_obj = os.path.join("assets", "scene", "Street environment_V01.obj")
@@ -301,7 +310,7 @@ class ViewerApp:
 
         # 2) Dynamic cars
         car_mesh = Mesh(os.path.join("assets", "car.obj")).setup()
-        num_cars = 16
+        num_cars = 5
         for i in range(num_cars):
             ent = Entity(
                 name=f"car_{i:02d}",
@@ -312,22 +321,19 @@ class ViewerApp:
             )
             self.scene.add_entity(ent)
 
-        # Initial domain randomization
-        self.scene.randomize_domain(
-            ground_y=0.0,
-            x_range=(-8.0, 8.0),
-            z_range=(-40.0, 10.0),
-            scale_range=(0.85, 1.15),
-            yaw_range=(0.0, 360.0),
+        self.scene.spawn_cars_on_lanes(
+            lanes_config=self._default_lanes_config(),
+            num_cars=num_cars,
+            scale_range=(0.9, 1.15),
             sat_padding=0.20,
-            max_retry=120,
+            max_retry_per_car=120,
         )
 
     def _on_key(self, _win, key, _scancode, action, _mods):
         if action not in (glfw.PRESS, glfw.REPEAT):
             return
 
-        if key in (glfw.KEY_ESCAPE, glfw.KEY_Q):
+        if key == glfw.KEY_ESCAPE:
             glfw.set_window_should_close(self.window, True)
             return
 
@@ -348,17 +354,14 @@ class ViewerApp:
             return
 
         if key == glfw.KEY_R:
-            # Domain randomization for car placement
-            self.scene.randomize_domain(
-                ground_y=0.0,
-                x_range=(-8.0, 8.0),
-                z_range=(-40.0, 10.0),
-                scale_range=(0.85, 1.15),
-                yaw_range=(0.0, 360.0),
+            self.scene.spawn_cars_on_lanes(
+                lanes_config=self._default_lanes_config(),
+                num_cars=len(self.scene.get_dynamic_entities()),
+                scale_range=(0.9, 1.15),
                 sat_padding=0.20,
-                max_retry=120,
+                max_retry_per_car=120,
             )
-            print("Domain randomized.")
+            print("Cars respawned on lanes.")
             return
 
         if key == glfw.KEY_P:
@@ -383,7 +386,7 @@ class ViewerApp:
         self.camera.process_mouse_delta(dx, dy)
 
     def run(self):
-        print("Controls: WASD move | Mouse look | R randomize | P export | 1/2/3 mode | F fill mode | ESC quit")
+        print("Controls: WASD + E/Q(C) move | Mouse look | R respawn lanes | P export | 1/2/3 mode | F fill mode | ESC quit")
 
         while not glfw.window_should_close(self.window):
             now = glfw.get_time()
