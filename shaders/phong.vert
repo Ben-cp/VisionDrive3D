@@ -12,6 +12,7 @@ uniform mat4 modelview;
 out vec3 v_normal;
 out vec3 v_pos;
 out vec3 v_color;
+out vec2 v_uv;
 
 void main() {
     vec4 pos4 = modelview * vec4(position, 1.0);
@@ -21,6 +22,7 @@ void main() {
     v_normal = normalize(vec3(normal_matrix * vec4(normal, 0.0)));
 
     v_color = color;
+    v_uv = texcoord;
     gl_Position = projection * pos4;
 }
 

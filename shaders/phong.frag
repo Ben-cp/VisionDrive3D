@@ -5,12 +5,17 @@ precision mediump float;
 in vec3 v_normal;
 in vec3 v_pos;
 in vec3 v_color;
+in vec2 v_uv;
 
-uniform mat3 K_materials;
-uniform mat3 I_light;
 uniform vec3 light_pos;
+uniform vec3 light_color;
 uniform float shininess;
-uniform int mode;
+uniform float ambient_strength;
+uniform float specular_strength;
+uniform sampler2D diffuse_map;
+uniform int has_texture;
+uniform int use_uniform_base_color;
+uniform vec3 base_color;
 
 out vec4 fragColor;
 
@@ -20,16 +25,21 @@ void main() {
     vec3 R = reflect(-L, N);
     vec3 V = normalize(-v_pos);
 
+    vec3 surface_color = v_color;
+    if (has_texture != 0) {
+        surface_color = texture(diffuse_map, v_uv).rgb;
+    } else if (use_uniform_base_color != 0) {
+        surface_color = base_color;
+    }
+
+    float diffuse = max(dot(L, N), 0.0);
     float specAngle = max(dot(R, V), 0.0);
     float specular = pow(specAngle, shininess);
-    float diffuse = max(dot(L, N), 0.0);
 
-    // g = (diffuse, specular, ambientFactor)
-    vec3 g = vec3(diffuse, specular, 1.0);
-    vec3 lit = matrixCompMult(K_materials, I_light) * g;
-
-    // Mix with per-vertex color so OBJ-only meshes still look reasonable.
-    vec3 rgb = 0.5 * lit + 0.5 * v_color;
+    vec3 ambient = ambient_strength * surface_color * light_color;
+    vec3 diffuse_term = diffuse * surface_color * light_color;
+    vec3 specular_term = specular_strength * specular * light_color;
+    vec3 rgb = ambient + diffuse_term + specular_term;
     fragColor = vec4(rgb, 1.0);
 }
 

@@ -309,8 +309,8 @@ class ViewerApp:
         self.scene.add_entity(street)
 
         # 2) Dynamic cars
-        car_mesh = Mesh(os.path.join("assets", "car.obj")).setup()
-        num_cars = 5
+        car_mesh = Mesh(os.path.join("assets", "car.glb")).setup()
+        num_cars = 3
         for i in range(num_cars):
             ent = Entity(
                 name=f"car_{i:02d}",
