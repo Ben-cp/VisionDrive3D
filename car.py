@@ -190,25 +190,50 @@ class Car(Entity):
     # ----------------------------
     # Wheel transforms
     # ----------------------------
+    # def _wheel_local_transform(self, wheel_key: str) -> np.ndarray:
+    #     """
+    #     Biến đổi wheel trong hệ thân xe:
+    #     - Spin (lăn): quanh trục qua **tâm mesh bánh** (gốc geometry), trong hệ thân xe.
+    #     - Steer (trước): quay Ry quanh **trục Y đi qua hub** của đúng bánh đó (không phải gốc xe).
+    #     - Cuối: đưa bánh tới hub_offset.
+    #     Chuỗi: T(hub) @ Ry @ R_spin  ≡  (T(hub)@Ry@T(-hub)) @ T(hub) @ R_spin
+    #     """
+    #     hub = self.wheels[wheel_key]["hub_offset"]
+    #     spin_deg = float(self.wheel_spin_angle.get(wheel_key, 0.0))
+    #     axis_body = self._rolling_axis_body(wheel_key)
+    #     spin = self._axis_angle_to_matrix4(axis_body, spin_deg)
+    #     th = self._translation_matrix4(hub)
+    #     tn  = self._translation_matrix4(-np.asarray(hub, dtype=np.float32))
+    #     if wheel_key in ("fl", "fr"):
+    #         steer_m = self._rotation_y_at_point(hub, float(self.steering_angle))
+    #     else:
+    #         steer_m = np.eye(4, dtype=np.float32)
+    #     return steer_m @ th @ spin @ tn
     def _wheel_local_transform(self, wheel_key: str) -> np.ndarray:
-        """
-        Biến đổi wheel trong hệ thân xe:
-        - Spin (lăn): quanh trục qua **tâm mesh bánh** (gốc geometry), trong hệ thân xe.
-        - Steer (trước): quay Ry quanh **trục Y đi qua hub** của đúng bánh đó (không phải gốc xe).
-        - Cuối: đưa bánh tới hub_offset.
-        Chuỗi: T(hub) @ Ry @ R_spin  ≡  (T(hub)@Ry@T(-hub)) @ T(hub) @ R_spin
-        """
-        hub = self.wheels[wheel_key]["hub_offset"]
+        wheel_data = self.wheels[wheel_key]
+        hub = wheel_data["hub_offset"]
+        model_data = wheel_data["model"]
+
+        # ← ĐÂY: tâm thực của mesh bánh trong body-space (sau khi bake GLB)
+        mesh_center = ((model_data.aabb_min + model_data.aabb_max) * 0.5).astype(np.float32)
+
         spin_deg = float(self.wheel_spin_angle.get(wheel_key, 0.0))
         axis_body = self._rolling_axis_body(wheel_key)
-        spin = self._axis_angle_to_matrix4(axis_body, spin_deg)
-        th = self._translation_matrix4(hub)
-        tn  = self._translation_matrix4(-np.asarray(hub, dtype=np.float32))
+
+        # Spin quanh mesh_center thay vì origin
+        tc  = self._translation_matrix4(mesh_center)
+        tnc = self._translation_matrix4(-mesh_center)
+        spin_at_center = tc @ self._axis_angle_to_matrix4(axis_body, spin_deg) @ tnc
+
+        # Steer (bánh trước) cũng quanh mesh_center
         if wheel_key in ("fl", "fr"):
-            steer_m = self._rotation_y_at_point(hub, float(self.steering_angle))
+            steer_m = self._rotation_y_at_point(mesh_center, float(self.steering_angle))
         else:
             steer_m = np.eye(4, dtype=np.float32)
-        return steer_m @ th @ spin @ tn
+
+        # hub_offset giữ nguyên vai trò fine-tuning nhỏ
+        th = self._translation_matrix4(hub)
+        return th @ steer_m @ spin_at_center
 
     @staticmethod
     def _translation_matrix4(t: np.ndarray) -> np.ndarray:
@@ -257,7 +282,8 @@ class Car(Entity):
         """Trục bánh trong hệ thân xe: R^T * normalize(cross(fwd_w, up_w))."""
         fwd_w = self._wheel_forward_world(wheel_key)
         up_w = np.array([0.0, 1.0, 0.0], dtype=np.float32)
-        axle_w = np.cross(fwd_w, up_w)
+        # axle_w = np.cross(fwd_w, up_w)
+        axle_w = np.cross(up_w, fwd_w)
         n = float(np.linalg.norm(axle_w))
         if n < 1e-8:
             axle_b = np.array([-1.0, 0.0, 0.0], dtype=np.float32)

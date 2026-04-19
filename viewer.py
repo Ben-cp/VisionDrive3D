@@ -407,7 +407,7 @@ class ViewerApp:
             projection = self.camera.projection_matrix(aspect)
             view = self.camera.view_matrix()
 
-            # self.scene.update(dt)
+            self.scene.update(dt)
             self.render_manager.draw(projection, view)
 
             glfw.swap_buffers(self.window)
