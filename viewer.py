@@ -217,7 +217,8 @@ import numpy as np
 import OpenGL.GL as GL
 
 from mesh import Mesh
-from entity import Scene, Entity, Camera
+from entity import Scene, Entity
+from camera_suite import Camera, CameraPresetFactory, CameraManager
 from renderers import RenderManager
 
 
@@ -264,16 +265,36 @@ class ViewerApp:
         self.fill_modes = cycle([GL.GL_FILL, GL.GL_LINE, GL.GL_POINT])
 
         self.scene = Scene()
-        self.camera = Camera(fov_deg=60.0, near=0.1, far=150.0)
-        self.camera.position[:] = np.array([0.0, 2.2, 12.0], dtype=np.float32)
+        
+        # 1. Setup CameraManager and the default free camera
+        self.camera_manager = CameraManager()
+        self.free_camera = Camera(name="free_cam", resolution=(1280, 720), near=0.1, far=150.0, is_free_cam=True)
+        self.free_camera.position[:] = np.array([0.0, 2.2, 12.0], dtype=np.float32)
+        self.camera_manager.add_camera(self.free_camera)
+        
+        # We also create an ego vehicle for dataset cameras
+        ego_mesh = Mesh(os.path.join("assets", "car.glb")).setup()
+        self.ego_vehicle = Entity(
+            name="ego_vehicle",
+            mesh=ego_mesh,
+            class_id=0,
+            instance_color=(0.1, 0.4, 0.9),
+            is_dynamic=True,
+        )
+        self.scene.add_entity(self.ego_vehicle)
+        self.ego_vehicle.position[:] = np.array([0, 0.05, 0], dtype=np.float32)
+
+        # 2. Add nuScenes cameras into manager
+        nuscenes_cams = CameraPresetFactory.create_nuscenes_surround(self.ego_vehicle)
+        self.camera_manager.add_cameras(nuscenes_cams)
 
         base_dir = os.path.dirname(os.path.abspath(__file__))
         self.render_manager = RenderManager(
             scene=self.scene,
             base_dir=base_dir,
             output_dir=os.path.join(base_dir, "outputs"),
-            near=self.camera.near,
-            far=self.camera.far,
+            near=0.1,
+            far=150.0,
         )
 
         self.last_time = glfw.get_time()
@@ -364,14 +385,41 @@ class ViewerApp:
             print("Cars respawned on lanes.")
             return
 
+        if key == glfw.KEY_TAB:
+            self.camera_manager.switch_next()
+            print(f"Switched to camera: {self.camera_manager.get_active_camera().name}")
+            return
+            
+        if key == glfw.KEY_G:
+            self._run_auto_generate_hook(num_frames=5)
+            return
+
         if key == glfw.KEY_P:
-            w, h = glfw.get_framebuffer_size(self.window)
-            aspect = float(w) / float(max(1, h))
-            projection = self.camera.projection_matrix(aspect)
-            view = self.camera.view_matrix()
-            self.render_manager.export_current_frame(projection, view, w, h)
+            self.render_manager.export_current_frame(self.camera_manager)
             print(f"Exported frame index: {self.render_manager.frame_idx - 1:06d}")
             return
+
+    def _run_auto_generate_hook(self, num_frames=5):
+        print(f"--- Starting automated dataset generation for {num_frames} frames ---")
+        for i in range(num_frames):
+            # randomizes scene layout
+            self.scene.spawn_cars_on_lanes(
+                lanes_config=self._default_lanes_config(),
+                num_cars=len(self.scene.get_dynamic_entities()),
+                scale_range=(0.9, 1.15),
+                sat_padding=0.20,
+                max_retry_per_car=120,
+            )
+            
+            # Optionally randomize ego location
+            tx = float(np.random.uniform(-3.0, 3.0))
+            tz = float(np.random.uniform(-30.0, 5.0))
+            self.ego_vehicle.position[:] = np.array([tx, 0.05, tz], dtype=np.float32)
+            
+            # We don't render to screen, just export the camera bounds
+            self.render_manager.export_current_frame(self.camera_manager)
+            print(f"Generated frame {self.render_manager.frame_idx - 1:06d}")
+        print("--- Automated generation complete ---")
 
     def _on_mouse_move(self, _win, xpos, ypos):
         if self.last_mouse_pos is None:
@@ -383,10 +431,11 @@ class ViewerApp:
         self.last_mouse_pos = (xpos, ypos)
 
         # Mouse look for fly navigation
-        self.camera.process_mouse_delta(dx, dy)
+        active_cam = self.camera_manager.get_active_camera()
+        active_cam.process_mouse_delta(dx, dy)
 
     def run(self):
-        print("Controls: WASD + E/Q(C) move | Mouse look | R respawn lanes | P export | 1/2/3 mode | F fill mode | ESC quit")
+        print("Controls: WASD + E/Q(C) move | Mouse look | TAB switch cam | R respawn | P export | G gen dataset | 1/2/3 mode | F fill")
 
         while not glfw.window_should_close(self.window):
             now = glfw.get_time()
@@ -395,17 +444,28 @@ class ViewerApp:
 
             glfw.poll_events()
 
-            # Fly camera update + ground following
-            self.camera.process_keyboard(self.window, dt)
-            self.camera.update_ground_alignment(self.scene, dt)
+            active_cam = self.camera_manager.get_active_camera()
+            active_cam.process_keyboard(self.window, dt)
+            active_cam.update_ground_alignment(self.scene, dt)
 
             w, h = glfw.get_framebuffer_size(self.window)
             GL.glViewport(0, 0, w, h)
             GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
 
-            aspect = float(w) / float(max(1, h))
-            projection = self.camera.projection_matrix(aspect)
-            view = self.camera.view_matrix()
+            # Re-read active camera resolution if necessary.
+            # But the viewport requires current window w, h for screen viewing
+            # so we only use camera.projection_matrix if the camera has one,
+            # wait, if camera has fixed resolution, it will stretch. That's fine for viewport.
+            projection = active_cam.projection_matrix()
+            # If our active_cam is free_cam which needs aspect, wait, we removed aspect argument
+            # Let's see, we stored resolution statically in Camera, but free_cam can update it?
+            # Actually our free_cam uses self.resolution inside projection_matrix
+            # Let's dynamically update free_cam resolution to window size so it doesn't stretch
+            if active_cam.is_free_cam:
+                active_cam.resolution = (w, h)
+                projection = active_cam.projection_matrix()
+
+            view = active_cam.view_matrix()
 
             self.render_manager.draw(projection, view)
 
