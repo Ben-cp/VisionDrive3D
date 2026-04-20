@@ -1,5 +1,6 @@
 # annotations.py
 import os
+import json
 from typing import List, Dict, Any, Tuple
 
 import numpy as np
@@ -79,11 +80,15 @@ class BBoxCalculator:
             if x_max - x_min < 1.0 or y_max - y_min < 1.0:
                 continue
 
+            local_center = (ent.local_aabb_min + ent.local_aabb_max) * 0.5
+            world_center = model @ np.array([local_center[0], local_center[1], local_center[2], 1.0], dtype=np.float32)
             bboxes.append(
                 {
                     "entity_name": ent.name,
                     "class_id": int(ent.class_id),
                     "xyxy": [x_min, y_min, x_max, y_max],
+                    "position3d": (ent.world_matrix()[:3, 3]).tolist(),
+                    "center3d": world_center[:3].tolist()
                 }
             )
 
@@ -146,32 +151,69 @@ class DatasetExporter:
             bh / max(1, height),
         )
 
-    def save_frame(
+    def save_multi_view(
         self,
         frame_idx: int,
-        rgb: np.ndarray,
-        mask: np.ndarray,
-        depth_gray: np.ndarray,
-        bboxes: List[Dict[str, Any]],
-        width: int,
-        height: int,
+        camera_data: Dict[str, Any]
     ):
-        stem = f"{frame_idx:06d}"
+        """
+        camera_data = {
+            "CAM_FRONT": {
+                "rgb": np.ndarray,
+                "mask": np.ndarray,
+                "depth_gray": np.ndarray,
+                "bboxes": List[Dict],
+                "intrinsics": np.ndarray,
+                "extrinsics": np.ndarray,
+                "width": int,
+                "height": int
+            },
+            ...
+        }
+        """
+        stem_idx = f"{frame_idx:06d}"
+        cameras_meta = {}
 
-        Image.fromarray(rgb, mode="RGB").save(os.path.join(self.rgb_dir, f"{stem}.png"))
-        Image.fromarray(mask, mode="RGB").save(os.path.join(self.mask_dir, f"{stem}.png"))
-        Image.fromarray(depth_gray, mode="L").save(os.path.join(self.depth_dir, f"{stem}.png"))
+        for cam_name, data in camera_data.items():
+            rgb = data["rgb"]
+            mask = data["mask"]
+            depth_gray = data["depth_gray"]
+            bboxes = data["bboxes"]
+            K = data["intrinsics"]
+            E = data["extrinsics"]
+            width = data["width"]
+            height = data["height"]
 
-        label_path = os.path.join(self.label_dir, f"{stem}.txt")
-        with open(label_path, "w", encoding="utf-8") as f:
-            for box in bboxes:
-                cls_id = int(box["class_id"])
-                x, y, w, h = self._xyxy_to_yolo(box["xyxy"], width, height)
+            prefix = f"{cam_name}_{stem_idx}"
 
-                # Clamp to [0, 1] to avoid numerical overflow near clip edges.
-                x = float(np.clip(x, 0.0, 1.0))
-                y = float(np.clip(y, 0.0, 1.0))
-                w = float(np.clip(w, 0.0, 1.0))
-                h = float(np.clip(h, 0.0, 1.0))
+            Image.fromarray(rgb, mode="RGB").save(os.path.join(self.rgb_dir, f"{prefix}.png"))
+            Image.fromarray(mask, mode="RGB").save(os.path.join(self.mask_dir, f"{prefix}.png"))
+            Image.fromarray(depth_gray, mode="L").save(os.path.join(self.depth_dir, f"{prefix}.png"))
 
-                f.write(f"{cls_id} {x:.6f} {y:.6f} {w:.6f} {h:.6f}\n")
+            label_path = os.path.join(self.label_dir, f"{prefix}.txt")
+            with open(label_path, "w", encoding="utf-8") as f:
+                for box in bboxes:
+                    cls_id = int(box["class_id"])
+                    x, y, w, h = self._xyxy_to_yolo(box["xyxy"], width, height)
+
+                    x = float(np.clip(x, 0.0, 1.0))
+                    y = float(np.clip(y, 0.0, 1.0))
+                    w = float(np.clip(w, 0.0, 1.0))
+                    h = float(np.clip(h, 0.0, 1.0))
+
+                    f.write(f"{cls_id} {x:.6f} {y:.6f} {w:.6f} {h:.6f}\\n")
+            
+            cameras_meta[cam_name] = {
+                "intrinsics": K.tolist(),
+                "extrinsics": E.tolist(),
+                "bboxes": bboxes
+            }
+
+        metadata = {
+            "frame_idx": frame_idx,
+            "cameras": cameras_meta
+        }
+
+        meta_path = os.path.join(self.output_dir, f"scene_metadata_{stem_idx}.json")
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, indent=2)
