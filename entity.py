@@ -142,6 +142,10 @@ class Entity(Node):
         mx = np.array([center_x + half_x, center_z + half_z], dtype=np.float32)
         return mn, mx
 
+    def update(self, dt: float):
+        _ = dt
+        pass
+
 
 class Scene:
     """
@@ -159,6 +163,10 @@ class Scene:
 
     def get_static_entities(self) -> List[Entity]:
         return [e for e in self.entities if not e.is_dynamic]
+
+    def update(self, dt: float):
+        for ent in self.get_dynamic_entities():
+            ent.update(dt)
 
     def raycast_ground_height(self, x: float, z: float, default_y: float = 0.0) -> float:
         """

@@ -327,18 +327,18 @@ class ViewerApp:
         street.scale[:] = np.array([1.0, 1.0, 1.0], dtype=np.float32)
         self.scene.add_entity(street)
 
-        # 2) Dynamic cars
-        car_mesh = Mesh(os.path.join("assets", "car.glb")).setup()
-        num_cars = 3
+        # 2) Dynamic cars (composed from assets/car0/*.glb)
+        num_cars = 5
         for i in range(num_cars):
-            ent = Entity(
+            car = Car(
+                car_folder=os.path.join("assets", "car0"),
                 name=f"car_{i:02d}",
                 mesh=car_mesh,
                 class_id=5,  # dynamic cars class is 5
                 instance_color=instance_color_from_id(i + 1),
-                is_dynamic=True,
+                scale=np.array([1.0, 1.0, 1.0], dtype=np.float32),
             )
-            self.scene.add_entity(ent)
+            self.scene.add_entity(car)
 
         self.scene.spawn_cars_on_lanes(
             lanes_config=self._default_lanes_config(),
