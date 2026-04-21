@@ -224,15 +224,13 @@ from renderers import RenderManager
 
 def instance_color_from_id(idx: int) -> tuple[float, float, float]:
     """
-    Deterministic unique color for mask rendering.
-    Avoid pure black (0,0,0) to keep background/object separable.
+    Visually distinct colors.
+    Dynamic Cars are Class 5 (Red). We still want to distinguish instances,
+    so we can vary the Blue channel slightly based on Instance ID.
+    Red base = 1.0, Green = 0.0.
     """
-    r = ((idx * 53) % 255) / 255.0
-    g = ((idx * 97) % 255) / 255.0
-    b = ((idx * 193) % 255) / 255.0
-    if r < 0.05 and g < 0.05 and b < 0.05:
-        r = 0.2
-    return (r, g, b)
+    b = float((idx * 60) % 255) / 255.0
+    return (1.0, 0.0, b)
 
 
 class ViewerApp:
@@ -277,8 +275,8 @@ class ViewerApp:
         self.ego_vehicle = Entity(
             name="ego_vehicle",
             mesh=ego_mesh,
-            class_id=0,
-            instance_color=(0.1, 0.4, 0.9),
+            class_id=4, # Ego vehicle class is 4
+            instance_color=(0.0, 0.0, 1.0), # Blue
             is_dynamic=True,
         )
         self.scene.add_entity(self.ego_vehicle)
@@ -322,7 +320,7 @@ class ViewerApp:
             name="street_environment",
             mesh=street_mesh,
             class_id=-1,
-            instance_color=(0.0, 0.0, 0.0),
+            instance_color=(-1.0, 0.0, 0.0), # Flag for ground/house dynamic shader
             is_dynamic=False,
         )
         street.position[:] = np.array([0.0, 0.0, 0.0], dtype=np.float32)
@@ -336,7 +334,7 @@ class ViewerApp:
             ent = Entity(
                 name=f"car_{i:02d}",
                 mesh=car_mesh,
-                class_id=0,  # vehicle class
+                class_id=5,  # dynamic cars class is 5
                 instance_color=instance_color_from_id(i + 1),
                 is_dynamic=True,
             )
@@ -391,7 +389,7 @@ class ViewerApp:
             return
             
         if key == glfw.KEY_G:
-            self._run_auto_generate_hook(num_frames=5)
+            self._run_auto_generate_hook(num_frames=500)
             return
 
         if key == glfw.KEY_P:
@@ -450,7 +448,10 @@ class ViewerApp:
 
             w, h = glfw.get_framebuffer_size(self.window)
             GL.glViewport(0, 0, w, h)
-            GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
+            # Default clearing for RGB interactive viewing
+            GL.glClearColor(0.18, 0.20, 0.24, 1.0)
+            if self.render_manager.mode != "MASK":
+                GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
 
             # Re-read active camera resolution if necessary.
             # But the viewport requires current window w, h for screen viewing

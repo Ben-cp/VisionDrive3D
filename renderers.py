@@ -40,6 +40,10 @@ class MaskRenderer:
         )
 
     def render(self, scene, projection: np.ndarray, view: np.ndarray):
+        # Clear specific to Mask: Sky semantic class = 1 (Bright Green visually)
+        GL.glClearColor(0.0, 1.0, 0.0, 1.0)
+        GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
+        
         GL.glUseProgram(self.shader.render_idx)
         uma = UManager(self.shader)
 
@@ -118,15 +122,22 @@ class RenderManager:
             GL.glViewport(0, 0, w, h)
 
             # 1) RGB pass
-            self._render_pass(self.rgb_renderer, projection, view)
+            GL.glClearColor(0.18, 0.20, 0.24, 1.0) # normal sky clear color
+            GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
+            self.rgb_renderer.render(self.scene, projection, view)
+            GL.glFinish()
             rgb = self.exporter.read_rgb_buffer(w, h)
 
-            # 2) Mask pass
-            self._render_pass(self.mask_renderer, projection, view)
+            # 2) Mask pass (MaskRenderer clears its own color for Sky)
+            self.mask_renderer.render(self.scene, projection, view)
+            GL.glFinish()
             mask = self.exporter.read_rgb_buffer(w, h)
 
             # 3) Depth pass
-            self._render_pass(self.depth_renderer, projection, view)
+            GL.glClearColor(1.0, 1.0, 1.0, 1.0)
+            GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
+            self.depth_renderer.render(self.scene, projection, view)
+            GL.glFinish()
             depth_gray = self.exporter.read_depth_buffer_as_gray(w, h)
 
             # 4) CPU bbox from dynamic entities
