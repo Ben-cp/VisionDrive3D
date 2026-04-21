@@ -1,4 +1,4 @@
-import OpenGL.GL as GL              # standard Python OpenGL wrapper
+import OpenGL.GL as GL  # standard Python OpenGL wrapper
 import numpy as np
 import pandas as pd
 import sys
@@ -6,9 +6,10 @@ import os
 
 
 class Shader:
-    """ Helper class to create and automatically destroy shader program """
+    """Helper class to create and automatically destroy shader program"""
+
     def __init__(self, vertex_source, fragment_source):
-        """ Shader can be initialized with raw strings or source file names """
+        """Shader can be initialized with raw strings or source file names"""
         self.render_idx = None
         vert = self._compile_shader(vertex_source, GL.GL_VERTEX_SHADER)
         frag = self._compile_shader(fragment_source, GL.GL_FRAGMENT_SHADER)
@@ -21,7 +22,7 @@ class Shader:
             GL.glDeleteShader(frag)
             status = GL.glGetProgramiv(self.render_idx, GL.GL_LINK_STATUS)
             if not status:
-                print(GL.glGetProgramInfoLog(self.render_idx).decode('ascii'))
+                print(GL.glGetProgramInfoLog(self.render_idx).decode("ascii"))
                 sys.exit(1)
 
     def __del__(self):
@@ -34,21 +35,22 @@ class Shader:
 
     @staticmethod
     def _compile_shader(src, shader_type):
-        src = open(src, 'r').read() if os.path.exists(src) else src
-        src = src.decode('ascii') if isinstance(src, bytes) else src
+        src = open(src, "r", encoding="utf-8").read() if os.path.exists(src) else src
+        src = src.decode("ascii") if isinstance(src, bytes) else src
         # Windows editors may save UTF-8 with BOM; GLSL requires #version first.
         # Strip BOM if present to avoid shader compile error.
-        if isinstance(src, str) and src.startswith('\ufeff'):
-            src = src.lstrip('\ufeff')
+        if isinstance(src, str) and src.startswith("\ufeff"):
+            src = src.lstrip("\ufeff")
         shader = GL.glCreateShader(shader_type)
-        GL.glShaderSource(shader, src)
+        print(repr(src[:80]))
+        GL.glShaderSource(shader, [src])
         GL.glCompileShader(shader)
         status = GL.glGetShaderiv(shader, GL.GL_COMPILE_STATUS)
-        src = ('%3d: %s' % (i + 1, l) for i, l in enumerate(src.splitlines()))
+        src = ("%3d: %s" % (i + 1, l) for i, l in enumerate(src.splitlines()))
         if not status:
-            log = GL.glGetShaderInfoLog(shader).decode('ascii')
+            log = GL.glGetShaderInfoLog(shader).decode("ascii")
             GL.glDeleteShader(shader)
-            src = '\n'.join(src)
-            print('Compile failed for %s\n%s\n%s' % (shader_type, log, src))
+            src = "\n".join(src)
+            print("Compile failed for %s\n%s\n%s" % (shader_type, log, src))
             sys.exit(1)
         return shader

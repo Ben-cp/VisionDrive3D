@@ -40,6 +40,10 @@ class MaskRenderer:
         )
 
     def render(self, scene, projection: np.ndarray, view: np.ndarray):
+        # Clear specific to Mask: Sky semantic class = 1 (Bright Green visually)
+        GL.glClearColor(0.0, 1.0, 0.0, 1.0)
+        GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
+        
         GL.glUseProgram(self.shader.render_idx)
         uma = UManager(self.shader)
 
@@ -104,36 +108,56 @@ class RenderManager:
         renderer.render(self.scene, projection, view)
         GL.glFinish()
 
-    def export_current_frame(self, projection: np.ndarray, view: np.ndarray, width: int, height: int):
-        width = int(width)
-        height = int(height)
+    def export_current_frame(self, camera_manager):
         old_mode = self.mode
+        camera_data = {}
 
-        # 1) RGB pass
-        self._render_pass(self.rgb_renderer, projection, view)
-        rgb = self.exporter.read_rgb_buffer(width, height)
-
-        # 2) Mask pass
-        self._render_pass(self.mask_renderer, projection, view)
-        mask = self.exporter.read_rgb_buffer(width, height)
-
-        # 3) Depth pass
-        self._render_pass(self.depth_renderer, projection, view)
-        depth_gray = self.exporter.read_depth_buffer_as_gray(width, height)
-
-        # 4) CPU bbox from dynamic entities
         dyn = self.scene.get_dynamic_entities()
-        bboxes = self.bbox_calculator.calculate(dyn, projection, view, width, height)
+
+        for cam in camera_manager.get_all_cameras():
+            w, h = cam.resolution
+            projection = cam.projection_matrix()
+            view = cam.view_matrix()
+            
+            GL.glViewport(0, 0, w, h)
+
+            # 1) RGB pass
+            GL.glClearColor(0.18, 0.20, 0.24, 1.0) # normal sky clear color
+            GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
+            self.rgb_renderer.render(self.scene, projection, view)
+            GL.glFinish()
+            rgb = self.exporter.read_rgb_buffer(w, h)
+
+            # 2) Mask pass (MaskRenderer clears its own color for Sky)
+            self.mask_renderer.render(self.scene, projection, view)
+            GL.glFinish()
+            mask = self.exporter.read_rgb_buffer(w, h)
+
+            # 3) Depth pass
+            GL.glClearColor(1.0, 1.0, 1.0, 1.0)
+            GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
+            self.depth_renderer.render(self.scene, projection, view)
+            GL.glFinish()
+            depth_gray = self.exporter.read_depth_buffer_as_gray(w, h)
+
+            # 4) CPU bbox from dynamic entities
+            bboxes = self.bbox_calculator.calculate(dyn, projection, view, w, h)
+
+            camera_data[cam.name] = {
+                "rgb": rgb,
+                "mask": mask,
+                "depth_gray": depth_gray,
+                "bboxes": bboxes,
+                "intrinsics": cam.get_intrinsics(),
+                "extrinsics": cam.get_extrinsics(),
+                "width": w,
+                "height": h
+            }
 
         # 5) Write dataset files
-        self.exporter.save_frame(
+        self.exporter.save_multi_view(
             frame_idx=self.frame_idx,
-            rgb=rgb,
-            mask=mask,
-            depth_gray=depth_gray,
-            bboxes=bboxes,
-            width=width,
-            height=height,
+            camera_data=camera_data
         )
 
         self.frame_idx += 1
