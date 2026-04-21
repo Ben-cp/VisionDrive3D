@@ -5,16 +5,17 @@ precision mediump float;
 uniform vec3 instance_color;
 
 in vec3 WorldNormal;
+in vec3 WorldPos;
 out vec4 fragColor;
 
 void main(){
     if (instance_color.r < 0.0) {
-        // Environment dynamic classification
-        if (WorldNormal.y > 0.8) {
+        // Ground Condition: Pointing Upwards AND close to Floor Height (Y < 0.5)
+        if (WorldNormal.y > 0.8 && WorldPos.y < 0.5) {
             // Ground -> Yellow
             fragColor = vec4(1.0, 1.0, 0.0, 1.0);
         } else {
-            // House -> Orange
+            // House/Roof/Walls -> Orange
             fragColor = vec4(1.0, 0.5, 0.0, 1.0);
         }
     } else {
