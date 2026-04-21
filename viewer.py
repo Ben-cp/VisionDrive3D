@@ -220,6 +220,7 @@ from mesh import Mesh
 from entity import Scene, Entity
 from camera_suite import Camera, CameraPresetFactory, CameraManager
 from renderers import RenderManager
+from car import Car
 
 
 def instance_color_from_id(idx: int) -> tuple[float, float, float]:
@@ -271,13 +272,11 @@ class ViewerApp:
         self.camera_manager.add_camera(self.free_camera)
         
         # We also create an ego vehicle for dataset cameras
-        ego_mesh = Mesh(os.path.join("assets", "car.glb")).setup()
-        self.ego_vehicle = Entity(
+        self.ego_vehicle = Car(
+            car_folder=os.path.join("assets", "car0"),
             name="ego_vehicle",
-            mesh=ego_mesh,
             class_id=4, # Ego vehicle class is 4
             instance_color=(0.0, 0.0, 1.0), # Blue
-            is_dynamic=True,
         )
         self.scene.add_entity(self.ego_vehicle)
         self.ego_vehicle.position[:] = np.array([0, 0.05, 0], dtype=np.float32)
@@ -333,10 +332,8 @@ class ViewerApp:
             car = Car(
                 car_folder=os.path.join("assets", "car0"),
                 name=f"car_{i:02d}",
-                mesh=car_mesh,
                 class_id=5,  # dynamic cars class is 5
                 instance_color=instance_color_from_id(i + 1),
-                scale=np.array([1.0, 1.0, 1.0], dtype=np.float32),
             )
             self.scene.add_entity(car)
 
@@ -466,6 +463,7 @@ class ViewerApp:
                 active_cam.resolution = (w, h)
                 projection = active_cam.projection_matrix()
 
+            self.scene.update(dt)
             view = active_cam.view_matrix()
 
             self.render_manager.draw(projection, view)
