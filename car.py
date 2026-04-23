@@ -5,7 +5,7 @@ import pathlib
 import random
 import struct
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -46,12 +46,6 @@ class Car(Entity):
         "bl": "wheel_bl.glb",
         "br": "wheel_br.glb",
     }
-    _WHEEL_OFFSETS = {
-        "fl": np.array([0.11184, 0.013377, 0.003469], dtype=np.float32), 
-        "fr": np.array([-0.11102, -0.014376, 0.006936], dtype=np.float32),
-        "bl": np.array([0.010105, -0.000043, -0.017052], dtype=np.float32), 
-        "br": np.array([-0.018945, 0.00004, -0.015956], dtype=np.float32), 
-    }
 
     def __init__(
         self,
@@ -68,8 +62,18 @@ class Car(Entity):
         self._body_root_offset = np.zeros(3, dtype=np.float32)
         self.wheel_spin_angle = {k: 0.0 for k in self._WHEEL_FILE}
         self.steering_angle = 0.0
-        self.speed = float(random.uniform(1.0, 2.0))
+        self.speed = 0.0
+        self.target_speed = float(random.uniform(3.0, 5.0))
         self.wheel_radius = 0.35
+
+        # --- Waypoint / pool state ---
+        self.waypoints: List[Tuple[float, float]] = []
+        self.current_wp_idx: int = 0
+        self.is_active: bool = False
+        self.route_finished: bool = False
+        self._yaw_lerp_factor: float = 5.0   # lerp speed for yaw smoothing
+        self._steer_lerp_factor: float = 8.0 # lerp speed for steering smoothing
+        self._lookahead_wps: int = 3         # how many waypoints ahead to look
 
         self._mesh_proxy = _CarMeshProxy(self)
         self._standalone_shader: Optional[Shader] = None
@@ -93,23 +97,126 @@ class Car(Entity):
         self.load_models(car_folder)
         self._refresh_local_bounds()
 
+    # ------------------------------------------------------------------
+    # Waypoint-following update
+    # ------------------------------------------------------------------
     def update(self, dt: float):
-        dt = float(max(0.0, dt))
+        dt = float(max(0.0, min(dt, 0.1)))
+
+        if not self.is_active or not self.waypoints:
+            return
+
+        # Already consumed all waypoints?
+        if self.current_wp_idx >= len(self.waypoints):
+            self.route_finished = True
+            return
+
+        current_yaw = float(self.rotation[1])
+
+        # --- Current target waypoint ---
+        wx, wz = self.waypoints[self.current_wp_idx]
+        px, pz = float(self.position[0]), float(self.position[2])
+        dx, dz = wx - px, wz - pz
+        dist = math.hypot(dx, dz)
+
+        # Calculate forward vector to see if waypoint is behind the car
+        fwd_x = math.sin(math.radians(current_yaw))
+        fwd_z = math.cos(math.radians(current_yaw))
+        dot_product = dx * fwd_x + dz * fwd_z
+
+        # Advance waypoint if close enough OR if the car has passed it
+        if dist < 2.5 or dot_product < 0.0:
+            self.current_wp_idx += 1
+            if self.current_wp_idx >= len(self.waypoints):
+                self.route_finished = True
+                return
+            wx, wz = self.waypoints[self.current_wp_idx]
+            dx, dz = wx - px, wz - pz
+            dist = math.hypot(dx, dz)
+
+        # --- Lookahead: pick a point several waypoints ahead for smoother steering ---
+        lookahead_idx = min(
+            self.current_wp_idx + self._lookahead_wps,
+            len(self.waypoints) - 1,
+        )
+        lx, lz = self.waypoints[lookahead_idx]
+        ldx, ldz = lx - px, lz - pz
+        ldist = math.hypot(ldx, ldz)
+
+        # --- Smooth yaw toward lookahead waypoint ---
+        if ldist > 0.01:
+            target_yaw = math.degrees(math.atan2(ldx, ldz))  # atan2(sin, cos)
+        else:
+            target_yaw = float(self.rotation[1])
+
+        current_yaw = float(self.rotation[1])
+
+        # Shortest-arc delta
+        delta_yaw = (target_yaw - current_yaw + 180.0) % 360.0 - 180.0
+
+        # Exponential lerp for smooth yaw rotation
+        lerp_t = min(1.0, self._yaw_lerp_factor * dt)
+        new_yaw = current_yaw + delta_yaw * lerp_t
+        self.rotation[1] = float(new_yaw % 360.0)
+
+        # --- Smooth steering angle (visual front-wheel offset) ---
+        target_steering = float(max(-35.0, min(35.0, delta_yaw * 1.5)))
+        steer_lerp = min(1.0, self._steer_lerp_factor * dt)
+        self.steering_angle += (target_steering - self.steering_angle) * steer_lerp
+
+        # --- Move forward ---
         distance = self.speed * dt
         forward = self._movement_forward_world()
         self.position += forward * distance
 
-        delta_angle_rad = distance / float(self.wheel_radius)
-        delta_angle_deg = math.degrees(delta_angle_rad)
-        for k in self.wheel_spin_angle:
-            self.wheel_spin_angle[k] += delta_angle_deg
+        # --- Spin wheels ---
+        if self.wheel_radius > 1e-4:
+            delta_angle_rad = distance / float(self.wheel_radius)
+            delta_angle_deg = math.degrees(delta_angle_rad)
+            for k in self.wheel_spin_angle:
+                self.wheel_spin_angle[k] += delta_angle_deg
 
-        if float(self.position[2]) > 15.0:
-            self.position[2] = -42.0
-            self.speed = float(random.uniform(3.0, 5.0))
+    # ------------------------------------------------------------------
+    # Object pool helpers
+    # ------------------------------------------------------------------
+    def reset_for_pool(
+        self,
+        x: float,
+        z: float,
+        yaw: float,
+        waypoints: List[Tuple[float, float]],
+        target_speed: float = 5.0,
+    ):
+        """Teleport & reset this car for reuse from the object pool."""
+        self.place_on_surface(x, z, 0.05)  # ground_y = 0.05
+        self.rotation[1] = float(yaw)
+        self.waypoints = list(waypoints)
+        self.current_wp_idx = 0
+        self.target_speed = float(target_speed)
+        self.speed = float(target_speed * 0.5)  # start at half speed
+        self.is_active = True
+        self.route_finished = False
+        self.steering_angle = 0.0
+        for k in self.wheel_spin_angle:
+            self.wheel_spin_angle[k] = 0.0
+
+    def future_aabb_xz(self, lookahead: float = 4.0) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Return an AABB in XZ shifted `lookahead` meters ahead along the
+        car's current forward vector.  Used for forward-collision radar.
+        """
+        fwd = self._movement_forward_world()
+        offset_x = float(fwd[0]) * lookahead
+        offset_z = float(fwd[2]) * lookahead
+
+        mn, mx = self.world_aabb_xz()
+        mn_shifted = mn + np.array([offset_x, offset_z], dtype=np.float32)
+        mx_shifted = mx + np.array([offset_x, offset_z], dtype=np.float32)
+        return mn_shifted, mx_shifted
 
     def load_models(self, folder: str):
         folder_abs = folder if os.path.isabs(folder) else os.path.join(os.path.dirname(__file__), folder)
+        wheel_offsets = self._load_wheel_offsets(folder_abs)
         body_path = os.path.join(folder_abs, "body_car.glb")
         self.body = self._load_model_data(body_path)
         self._body_root_offset = self._read_body_root_offset(body_path)
@@ -119,7 +226,7 @@ class Car(Entity):
         unit_s = np.array([1.0, 1.0, 1.0], dtype=np.float32)
         for key, filename in self._WHEEL_FILE.items():
             glb_path = os.path.join(folder_abs, filename)
-            offset = np.asarray(self._WHEEL_OFFSETS[key], dtype=np.float32)
+            offset = np.asarray(wheel_offsets[key], dtype=np.float32)
             # Mesh loader bakes GLB node TRS into vertices; do not re-apply node0 TRS here.
             self.wheels[key] = {
                 "model": self._load_model_data(glb_path),
@@ -131,6 +238,27 @@ class Car(Entity):
                     scale=unit_s,
                 ),
             }
+
+    def _load_wheel_offsets(self, folder_abs: str) -> Dict[str, np.ndarray]:
+        offsets_path = os.path.join(folder_abs, "wheel_offsets.py")
+        if not os.path.exists(offsets_path):
+            raise FileNotFoundError(f"Missing wheel offsets file: {offsets_path}")
+
+        namespace = {"np": np, "__builtins__": __builtins__}
+        with open(offsets_path, "r", encoding="utf-8") as f:
+            source = f.read()
+        exec(compile(source, offsets_path, "exec"), namespace, namespace)
+
+        raw_offsets = namespace.get("_WHEEL_OFFSETS")
+        if not isinstance(raw_offsets, dict):
+            raise ValueError(f"Invalid _WHEEL_OFFSETS in {offsets_path}: expected dict")
+
+        wheel_offsets: Dict[str, np.ndarray] = {}
+        for key in self._WHEEL_FILE:
+            if key not in raw_offsets:
+                raise ValueError(f"Missing wheel offset '{key}' in {offsets_path}")
+            wheel_offsets[key] = np.asarray(raw_offsets[key], dtype=np.float32)
+        return wheel_offsets
 
     def render(
         self,
@@ -158,14 +286,12 @@ class Car(Entity):
         self._draw_with_shader(view_matrix, projection_matrix, shader, model_override=None)
 
     def move(self, delta):
-        """Simple movement - implement later."""
+        """Simple movement - deprecated, use waypoint system."""
         _ = delta
-        pass
 
     def follow_trajectory(self, points, speed, dt):
-        """Path following - implement later."""
+        """Path following - deprecated, use waypoint system."""
         _ = (points, speed, dt)
-        pass
 
     # ----------------------------
     # Draw internals
