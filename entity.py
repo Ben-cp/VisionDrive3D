@@ -164,6 +164,11 @@ class Scene:
     def get_static_entities(self) -> List[Entity]:
         return [e for e in self.entities if not e.is_dynamic]
 
+    def get_traffic_cars(self) -> list:
+        """Return dynamic Car entities that participate in traffic (class_id == 5)."""
+        from car import Car
+        return [e for e in self.entities if isinstance(e, Car) and e.class_id == 5]
+
     def update(self, dt: float):
         for ent in self.get_dynamic_entities():
             ent.update(dt)
