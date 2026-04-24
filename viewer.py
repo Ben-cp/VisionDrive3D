@@ -209,8 +209,11 @@
 
 # viewer.py
 import os
-import random
+import subprocess
+import tempfile
+import textwrap
 from itertools import cycle
+from pathlib import Path
 
 import glfw
 import numpy as np
@@ -219,7 +222,7 @@ import OpenGL.GL as GL
 from mesh import Mesh
 from entity import Scene, Entity
 from camera_suite import Camera, CameraPresetFactory, CameraManager
-from renderers import RenderManager
+from renderers import RenderManager, PointLight
 from car import Car
 
 
@@ -311,22 +314,220 @@ class ViewerApp:
             {"x_center": 3.5, "z_min": -42.0, "z_max": 10.0, "direction": [0.0, 0.0, 1.0], "ground_y": 0.05, "x_jitter": 0.28, "safe_z": 3.2},
         ]
 
-    def _load_scene_assets(self, base_dir: str):
-        # 1) Static environment (do not randomize its transform)
-        street_obj = os.path.join("assets", "scene", "Street environment_V01.obj")
-        street_mesh = Mesh(street_obj).setup()
-        street = Entity(
-            name="street_environment",
-            mesh=street_mesh,
+    @staticmethod
+    def _resolve_blender_executable() -> str | None:
+        candidates = [
+            "blender",
+            "/Applications/Blender.app/Contents/MacOS/Blender",
+        ]
+        for candidate in candidates:
+            try:
+                result = subprocess.run(
+                    [candidate, "--version"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                    text=True,
+                    timeout=5,
+                )
+                if result.returncode == 0:
+                    return candidate
+            except Exception:
+                continue
+        return None
+
+    def _convert_to_glb_with_blender(self, source_path: str) -> str | None:
+        blender_exec = self._resolve_blender_executable()
+        if blender_exec is None:
+            return None
+
+        cache_dir = os.path.join(tempfile.gettempdir(), "visiondrive3d_cache", "road_junction")
+        os.makedirs(cache_dir, exist_ok=True)
+
+        src = Path(source_path)
+        output_glb = os.path.join(cache_dir, f"{src.stem}.glb")
+        script_path = os.path.join(cache_dir, f"export_{src.stem}.py")
+
+        if os.path.exists(output_glb):
+            try:
+                if os.path.getmtime(output_glb) >= os.path.getmtime(source_path):
+                    return output_glb
+            except OSError:
+                pass
+
+        script = textwrap.dedent(
+            """
+            import bpy
+            import os
+            import sys
+
+            argv = sys.argv
+            if "--" in argv:
+                argv = argv[argv.index("--") + 1 :]
+            if len(argv) < 2:
+                raise RuntimeError("Expected source and target path")
+
+            source_path = argv[0]
+            target_path = argv[1]
+            ext = os.path.splitext(source_path)[1].lower()
+
+            bpy.ops.wm.read_factory_settings(use_empty=True)
+
+            if ext == ".fbx":
+                bpy.ops.import_scene.fbx(filepath=source_path)
+            elif ext == ".blend":
+                bpy.ops.wm.open_mainfile(filepath=source_path)
+            else:
+                raise RuntimeError(f"Unsupported source format for blender conversion: {ext}")
+
+            bpy.ops.export_scene.gltf(
+                filepath=target_path,
+                export_format="GLB",
+                export_apply=True,
+                export_texcoords=True,
+                export_normals=True,
+                export_materials="EXPORT",
+                export_cameras=False,
+                export_lights=False,
+            )
+            """
+        )
+
+        try:
+            with open(script_path, "w", encoding="utf-8") as f:
+                f.write(script)
+        except OSError:
+            return None
+
+        try:
+            result = subprocess.run(
+                [blender_exec, "-b", "-P", script_path, "--", source_path, output_glb],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                text=True,
+                timeout=180,
+            )
+            if result.returncode == 0 and os.path.exists(output_glb):
+                return output_glb
+        except Exception:
+            return None
+
+        return None
+
+    def _resolve_master_road_geometry(self, base_dir: str) -> str | None:
+        road_dir = os.path.join(base_dir, "assets", "road_junction")
+        if not os.path.isdir(road_dir):
+            return None
+
+        entries = os.listdir(road_dir)
+        priority_ext = [".obj", ".glb", ".fbx", ".blend"]
+
+        for ext in priority_ext:
+            matches = sorted([os.path.join(road_dir, e) for e in entries if e.lower().endswith(ext)])
+            for path in matches:
+                if ext in {".obj", ".glb"}:
+                    return path
+
+                converted = self._convert_to_glb_with_blender(path)
+                if converted is not None:
+                    return converted
+
+        return None
+
+    def _load_master_road_entity(self, base_dir: str) -> Entity | None:
+        road_geom = self._resolve_master_road_geometry(base_dir)
+        if road_geom is None:
+            print("[road_junction] No supported geometry found (.obj/.glb/.fbx/.blend).")
+            return None
+
+        mesh = Mesh(road_geom).setup()
+
+        # Optional MTL override to preserve road_junction material mapping if provided.
+        road_dir = os.path.join(base_dir, "assets", "road_junction")
+        mtl_candidates = sorted([os.path.join(road_dir, f) for f in os.listdir(road_dir) if f.lower().endswith(".mtl")])
+        if mtl_candidates:
+            mesh.apply_mtl_overrides(mtl_candidates[0])
+
+        road = Entity(
+            name="road_junction_master",
+            mesh=mesh,
             class_id=-1,
-            instance_color=(-1.0, 0.0, 0.0), # Flag for ground/house dynamic shader
+            instance_color=(-1.0, 0.0, 0.0),
             is_dynamic=False,
         )
-        street.position[:] = np.array([0.0, 0.0, 0.0], dtype=np.float32)
-        street.scale[:] = np.array([1.0, 1.0, 1.0], dtype=np.float32)
-        self.scene.add_entity(street)
+        road.position[:] = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+        road.scale[:] = np.array([1.0, 1.0, 1.0], dtype=np.float32)
+        self.scene.add_entity(road)
+        print(f"[road_junction] Loaded master geometry: {road_geom}")
+        return road
 
-        # 2) Dynamic cars (composed from assets/car0/*.glb)
+    def _spawn_scene_houses_around_road(self, road_entity: Entity | None):
+        houses_mesh = Mesh(os.path.join("assets", "scene", "Street environment_V01.obj")).setup()
+
+        default_offsets = [
+            (-52.0, 0.0, -32.0),
+            (52.0, 0.0, -32.0),
+            (-52.0, 0.0, 32.0),
+            (52.0, 0.0, 32.0),
+        ]
+        offsets = default_offsets
+
+        if road_entity is not None:
+            aabb_min, aabb_max = road_entity.mesh.compute_local_aabb()
+            width = float(max(16.0, aabb_max[0] - aabb_min[0]))
+            depth = float(max(16.0, aabb_max[2] - aabb_min[2]))
+            dx = 0.75 * width + 18.0
+            dz = 0.75 * depth + 14.0
+            offsets = [(-dx, 0.0, -dz), (dx, 0.0, -dz), (-dx, 0.0, dz), (dx, 0.0, dz)]
+
+        for idx, (x, y, z) in enumerate(offsets):
+            houses = Entity(
+                name=f"scene_houses_{idx:02d}",
+                mesh=houses_mesh,
+                class_id=-1,
+                instance_color=(-1.0, 0.0, 0.0),
+                is_dynamic=False,
+            )
+            houses.position[:] = np.array([x, y, z], dtype=np.float32)
+            houses.scale[:] = np.array([0.85, 0.85, 0.85], dtype=np.float32)
+            self.scene.add_entity(houses)
+
+    def _configure_lighting_from_road_junction(self, road_entity: Entity | None):
+        if road_entity is None:
+            self.render_manager.lighting.point_lights = []
+            return
+
+        aabb_min, aabb_max = road_entity.mesh.compute_local_aabb()
+        cx = 0.5 * float(aabb_min[0] + aabb_max[0])
+        cz = 0.5 * float(aabb_min[2] + aabb_max[2])
+        span_x = float(max(20.0, aabb_max[0] - aabb_min[0]))
+        span_z = float(max(20.0, aabb_max[2] - aabb_min[2]))
+        lamp_y = float(max(6.0, aabb_max[1] * 0.8))
+
+        # Auto-insert night lamps around the intersection when no dedicated night rig exists.
+        lamp_positions = [
+            np.array([cx - 0.35 * span_x, lamp_y, cz - 0.28 * span_z], dtype=np.float32),
+            np.array([cx + 0.35 * span_x, lamp_y, cz - 0.28 * span_z], dtype=np.float32),
+            np.array([cx - 0.35 * span_x, lamp_y, cz + 0.28 * span_z], dtype=np.float32),
+            np.array([cx + 0.35 * span_x, lamp_y, cz + 0.28 * span_z], dtype=np.float32),
+            np.array([cx - 0.12 * span_x, lamp_y + 0.4, cz], dtype=np.float32),
+            np.array([cx + 0.12 * span_x, lamp_y + 0.4, cz], dtype=np.float32),
+        ]
+        self.render_manager.lighting.point_lights = [
+            PointLight(position=pos, intensity=2.9, radius=max(span_x, span_z) * 0.45)
+            for pos in lamp_positions
+        ]
+
+    def _load_scene_assets(self, base_dir: str):
+        # 1) Master road junction from assets/road_junction (FBX/BLEND/OBJ/GLB + optional MTL override)
+        road_entity = self._load_master_road_entity(base_dir)
+
+        # 2) Secondary house assets from assets/scene (keep existing OBJ+MTL texture pipeline untouched)
+        self._spawn_scene_houses_around_road(road_entity)
+        self._configure_lighting_from_road_junction(road_entity)
+
+        # 3) Dynamic cars (composed from assets/car0/*.glb)
         num_cars = 5
         for i in range(num_cars):
             car = Car(
@@ -367,6 +568,12 @@ class ViewerApp:
 
         if key == glfw.KEY_3:
             self.render_manager.set_mode("DEPTH")
+            return
+
+        if key == glfw.KEY_T:
+            is_dark = self.render_manager.toggle_dark_mode()
+            mode_name = "Dark" if is_dark else "Day"
+            print(f"Lighting mode: {mode_name}")
             return
 
         if key == glfw.KEY_R:
@@ -430,7 +637,7 @@ class ViewerApp:
         active_cam.process_mouse_delta(dx, dy)
 
     def run(self):
-        print("Controls: WASD + E/Q(C) move | Mouse look | TAB switch cam | R respawn | P export | G gen dataset | 1/2/3 mode | F fill")
+        print("Controls: WASD + E/Q(C) move | Mouse look | TAB switch cam | R respawn | P export | G gen dataset | 1/2/3 mode | T day/night | F fill")
 
         while not glfw.window_should_close(self.window):
             now = glfw.get_time()
@@ -445,8 +652,8 @@ class ViewerApp:
 
             w, h = glfw.get_framebuffer_size(self.window)
             GL.glViewport(0, 0, w, h)
-            # Default clearing for RGB interactive viewing
-            GL.glClearColor(0.18, 0.20, 0.24, 1.0)
+            clear_color = self.render_manager.get_clear_color()
+            GL.glClearColor(clear_color[0], clear_color[1], clear_color[2], clear_color[3])
             if self.render_manager.mode != "MASK":
                 GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
 

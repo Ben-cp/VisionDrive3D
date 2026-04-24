@@ -16,6 +16,17 @@ uniform sampler2D diffuse_map;
 uniform int has_texture;
 uniform int use_uniform_base_color;
 uniform vec3 base_color;
+uniform int use_emissive;
+uniform vec3 emissive_color;
+uniform float emissive_strength;
+uniform float emissive_global_scale;
+
+const int MAX_POINT_LIGHTS = 16;
+uniform int num_point_lights;
+uniform vec3 point_light_pos[MAX_POINT_LIGHTS];
+uniform vec3 point_light_color[MAX_POINT_LIGHTS];
+uniform float point_light_intensity[MAX_POINT_LIGHTS];
+uniform float point_light_range[MAX_POINT_LIGHTS];
 
 out vec4 fragColor;
 
@@ -39,7 +50,37 @@ void main() {
     vec3 ambient = ambient_strength * surface_color * light_color;
     vec3 diffuse_term = diffuse * surface_color * light_color;
     vec3 specular_term = specular_strength * specular * light_color;
-    vec3 rgb = ambient + diffuse_term + specular_term;
+
+    vec3 point_accum = vec3(0.0);
+    for (int i = 0; i < MAX_POINT_LIGHTS; ++i) {
+        if (i >= num_point_lights) {
+            break;
+        }
+
+        vec3 Lp = point_light_pos[i] - v_pos;
+        float d = length(Lp);
+        if (d <= 1e-5) {
+            continue;
+        }
+        vec3 Lpn = normalize(Lp);
+        float range_f = max(point_light_range[i], 0.01);
+        float attenuation = clamp(1.0 - d / range_f, 0.0, 1.0);
+        attenuation *= attenuation;
+
+        float diff_p = max(dot(N, Lpn), 0.0);
+        vec3 Rp = reflect(-Lpn, N);
+        float spec_p = pow(max(dot(Rp, V), 0.0), shininess);
+
+        vec3 p_color = point_light_color[i] * point_light_intensity[i];
+        point_accum += attenuation * (diff_p * surface_color * p_color + specular_strength * spec_p * p_color);
+    }
+
+    vec3 emissive = vec3(0.0);
+    if (use_emissive != 0) {
+        emissive = emissive_color * emissive_strength * max(emissive_global_scale, 0.0);
+    }
+
+    vec3 rgb = ambient + diffuse_term + specular_term + point_accum + emissive;
     fragColor = vec4(rgb, 1.0);
 }
 

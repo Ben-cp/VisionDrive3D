@@ -204,7 +204,7 @@ class Mesh:
     @staticmethod
     def _parse_mtl_materials(mtl_path: str) -> dict[str, dict]:
         """
-        Parse per-material diffuse color and map_Kd from MTL.
+        Parse per-material diffuse color, emissive color and map_Kd from MTL.
         """
         if not mtl_path or not os.path.exists(mtl_path):
             return {}
@@ -248,6 +248,7 @@ class Mesh:
                         current_name = s[7:].strip()
                         materials[current_name] = {
                             "diffuse": np.array([0.6, 0.6, 0.6], dtype=np.float32),
+                            "emissive": np.zeros(3, dtype=np.float32),
                             "texture_path": None,
                         }
                         continue
@@ -260,6 +261,18 @@ class Mesh:
                         if len(parts) >= 4:
                             try:
                                 materials[current_name]["diffuse"] = np.array(
+                                    [float(parts[1]), float(parts[2]), float(parts[3])],
+                                    dtype=np.float32,
+                                )
+                            except ValueError:
+                                pass
+                        continue
+
+                    if s.lower().startswith("ke "):
+                        parts = s.split()
+                        if len(parts) >= 4:
+                            try:
+                                materials[current_name]["emissive"] = np.array(
                                     [float(parts[1]), float(parts[2]), float(parts[3])],
                                     dtype=np.float32,
                                 )
@@ -518,6 +531,9 @@ class Mesh:
                 else:
                     base_color = np.array([0.6, 0.6, 0.6], dtype=np.float32)
 
+            emissive_color = np.asarray(material_info.get("emissive", np.zeros(3, dtype=np.float32)), dtype=np.float32)
+            emissive_strength = float(np.linalg.norm(emissive_color))
+
             submesh_vao = VAO()
             submesh_vao.add_vbo(0, v, ncomponents=3)
             submesh_vao.add_vbo(1, n, ncomponents=3)
@@ -530,6 +546,9 @@ class Mesh:
                     "texture_id": tex_id,
                     "has_texture": tex_id is not None,
                     "base_color": np.asarray(base_color, dtype=np.float32),
+                    "material_name": material_name,
+                    "emissive_color": emissive_color,
+                    "emissive_strength": emissive_strength,
                     "vertices": v.astype(np.float32, copy=False),
                 }
             )
@@ -651,6 +670,9 @@ class Mesh:
                     base_color_factor = np.array(pbr.get("baseColorFactor", [0.6, 0.6, 0.6, 1.0])[:3], dtype=np.float32)
                     base_color_texture = pbr.get("baseColorTexture", {})
                     tex_id = resolve_texture(base_color_texture.get("index"))
+                    emissive_factor = np.array(material.get("emissiveFactor", [0.0, 0.0, 0.0]), dtype=np.float32)
+                    emissive_strength = float(np.linalg.norm(emissive_factor))
+                    material_name = material.get("name", f"material_{material_idx if material_idx is not None else 0}")
 
                     colors = np.tile(base_color_factor[None, :], (v.shape[0], 1)).astype(np.float32)
 
@@ -666,6 +688,9 @@ class Mesh:
                             "texture_id": tex_id,
                             "has_texture": tex_id is not None,
                             "base_color": base_color_factor,
+                            "material_name": material_name,
+                            "emissive_color": emissive_factor,
+                            "emissive_strength": emissive_strength,
                             "vertices": v.astype(np.float32, copy=False),
                         }
                     )
@@ -713,6 +738,48 @@ class Mesh:
         min_coords = np.min(self.vertices, axis=0)
         max_coords = np.max(self.vertices, axis=0)
         return min_coords.astype(np.float32), max_coords.astype(np.float32)
+
+    def apply_mtl_overrides(self, mtl_path: str):
+        """
+        Apply MTL material overrides to already loaded submeshes.
+        This is useful when loading geometry from formats like FBX/BLEND
+        while still wanting to enforce a companion MTL look definition.
+        """
+        material_overrides = self._parse_mtl_materials(mtl_path)
+        if not material_overrides:
+            return
+
+        texture_cache: dict[str, int] = {}
+        for sm in self.submeshes:
+            material_name = sm.get("material_name")
+            if not material_name:
+                continue
+
+            override = material_overrides.get(material_name)
+            if not override:
+                continue
+
+            base_color = override.get("diffuse")
+            if base_color is not None:
+                sm["base_color"] = np.asarray(base_color, dtype=np.float32)
+
+            emissive_color = np.asarray(override.get("emissive", np.zeros(3, dtype=np.float32)), dtype=np.float32)
+            sm["emissive_color"] = emissive_color
+            sm["emissive_strength"] = float(np.linalg.norm(emissive_color))
+
+            texture_path = override.get("texture_path")
+            if texture_path and not sm.get("has_texture", False):
+                tex_id = texture_cache.get(texture_path)
+                if tex_id is None:
+                    tex_id = self._create_gl_texture(texture_path)
+                    if tex_id is not None:
+                        texture_cache[texture_path] = tex_id
+                if tex_id is not None:
+                    sm["texture_id"] = tex_id
+                    sm["has_texture"] = True
+
+        self.texture_id = next((sm["texture_id"] for sm in self.submeshes if sm.get("texture_id") is not None), None)
+        self.has_texture = any(bool(sm.get("has_texture", False)) for sm in self.submeshes)
 
     def setup(self):
         base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -773,6 +840,11 @@ class Mesh:
 
             uma.upload_uniform_scalar1i(1, "use_uniform_base_color")
             uma.upload_uniform_vector3fv(submesh["base_color"], "base_color")
+            emissive_color = np.asarray(submesh.get("emissive_color", np.zeros(3, dtype=np.float32)), dtype=np.float32)
+            emissive_strength = float(submesh.get("emissive_strength", 0.0))
+            uma.upload_uniform_scalar1i(1 if emissive_strength > 1e-5 else 0, "use_emissive")
+            uma.upload_uniform_vector3fv(emissive_color, "emissive_color")
+            uma.upload_uniform_scalar1f(emissive_strength, "emissive_strength")
 
             submesh["vao"].activate()
             GL.glDrawArrays(GL.GL_TRIANGLES, 0, submesh["vertex_count"])
