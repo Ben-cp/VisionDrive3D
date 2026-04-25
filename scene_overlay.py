@@ -191,10 +191,10 @@ class SceneOverlay:
         x_vals = [item["offset"][0] for item in self.corner_offsets]
         z_vals = [item["offset"][2] for item in self.corner_offsets]
         clip_box = {
-            "min_x": float(min(x_vals)) + 17.0, 
-            "max_x": float(max(x_vals)) - 17.0, 
-            "min_z": float(min(z_vals)) + 17.0, 
-            "max_z": float(max(z_vals)) - 17.0, 
+            "min_x": float(min(x_vals)) + 16.0, 
+            "max_x": float(max(x_vals)) - 16.0, 
+            "min_z": float(min(z_vals)) + 16.0, 
+            "max_z": float(max(z_vals)) - 16.0, 
         }
 
         # 1) Vẽ ngã tư nền (Truyền cờ is_rgb xuống)

@@ -73,14 +73,15 @@ class ViewerApp:
         self._camera_host_car = None  # the traffic car cameras are attached to
 
         base_dir = os.path.dirname(os.path.abspath(__file__))
+        self.scene_overlay = SceneOverlay()
         self.render_manager = RenderManager(
             scene=self.scene,
             base_dir=base_dir,
+            scene_overlay=self.scene_overlay,
             output_dir=os.path.join(base_dir, "outputs"),
             near=0.1,
             far=150.0,
         )
-        self.scene_overlay = SceneOverlay()
         
         self.last_time = glfw.get_time()
         self.last_mouse_pos = None
@@ -283,20 +284,6 @@ class ViewerApp:
             view = active_cam.view_matrix()
 
             self.render_manager.draw(projection, view)
-
-            if self.render_manager.mode == "RGB":
-                self.scene_overlay.render(
-                    shader_program=self.render_manager.rgb_renderer.shader,
-                    projection=projection,
-                    view=view,
-                )
-            else:
-                self.scene_overlay.render(
-                    shader_program=self.render_manager.rgb_renderer.shader,
-                    projection=projection,
-                    view=view,
-                    is_rgb=False, 
-                )
 
             glfw.swap_buffers(self.window)
 

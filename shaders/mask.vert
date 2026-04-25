@@ -10,6 +10,7 @@ uniform mat4 model;
 
 out vec3 WorldNormal;
 out vec3 WorldPos;
+out vec3 v_pos;
 
 void main(){
     gl_Position = projection * modelview * vec4(position, 1.0);
@@ -19,4 +20,5 @@ void main(){
     
     // Calculate and pass out the raw World Position
     WorldPos = vec3(model * vec4(position, 1.0));
+    v_pos = WorldPos;
 }

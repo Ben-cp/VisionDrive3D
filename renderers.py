@@ -95,25 +95,41 @@ class RenderManager:
         if mode in {"RGB", "MASK", "DEPTH"}:
             self.mode = mode
 
-    def draw(self, projection: np.ndarray, view: np.ndarray):
+    @staticmethod
+    def _reset_texture_state(shader=None):
         GL.glActiveTexture(GL.GL_TEXTURE0)
         GL.glBindTexture(GL.GL_TEXTURE_2D, 0)
+        if shader is not None:
+            GL.glUseProgram(shader.render_idx)
+            loc_has_texture = GL.glGetUniformLocation(shader.render_idx, "has_texture")
+            if loc_has_texture != -1:
+                GL.glUniform1i(loc_has_texture, 0)
+
+    def draw(self, projection: np.ndarray, view: np.ndarray):
+        self._reset_texture_state()
+
         if self.mode == "RGB":
             self.rgb_renderer.render(self.scene, projection, view)
+            self._reset_texture_state(self.rgb_renderer.shader)
             if self.scene_overlay:
                 self.scene_overlay.render(self.rgb_renderer.shader, projection, view, is_rgb=True)
-                GL.glBindTexture(GL.GL_TEXTURE_2D, 0)
+            self._reset_texture_state(self.rgb_renderer.shader)
 
         elif self.mode == "MASK":
-            # Trước khi render Mask, đảm bảo shader không hiểu nhầm có texture
+            self._reset_texture_state(self.mask_renderer.shader)
             self.mask_renderer.render(self.scene, projection, view)
+            self._reset_texture_state(self.mask_renderer.shader)
             if self.scene_overlay:
                 self.scene_overlay.render(self.mask_renderer.shader, projection, view, is_rgb=False)
+            self._reset_texture_state(self.mask_renderer.shader)
 
         elif self.mode == "DEPTH":
+            self._reset_texture_state(self.depth_renderer.shader)
             self.depth_renderer.render(self.scene, projection, view)
+            self._reset_texture_state(self.depth_renderer.shader)
             if self.scene_overlay:
                 self.scene_overlay.render(self.depth_renderer.shader, projection, view, is_rgb=False)
+            self._reset_texture_state(self.depth_renderer.shader)
 
     def _render_pass(self, renderer, projection: np.ndarray, view: np.ndarray):
         GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
@@ -136,19 +152,31 @@ class RenderManager:
             # 1) RGB pass
             GL.glClearColor(0.18, 0.20, 0.24, 1.0) # normal sky clear color
             GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
+            self._reset_texture_state(self.rgb_renderer.shader)
             self.rgb_renderer.render(self.scene, projection, view)
+            if self.scene_overlay:
+                self.scene_overlay.render(self.rgb_renderer.shader, projection, view, is_rgb=True)
+            self._reset_texture_state(self.rgb_renderer.shader)
             GL.glFinish()
             rgb = self.exporter.read_rgb_buffer(w, h)
 
             # 2) Mask pass (MaskRenderer clears its own color for Sky)
+            self._reset_texture_state(self.mask_renderer.shader)
             self.mask_renderer.render(self.scene, projection, view)
+            if self.scene_overlay:
+                self.scene_overlay.render(self.mask_renderer.shader, projection, view, is_rgb=False)
+            self._reset_texture_state(self.mask_renderer.shader)
             GL.glFinish()
             mask = self.exporter.read_rgb_buffer(w, h)
 
             # 3) Depth pass
             GL.glClearColor(1.0, 1.0, 1.0, 1.0)
             GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
+            self._reset_texture_state(self.depth_renderer.shader)
             self.depth_renderer.render(self.scene, projection, view)
+            if self.scene_overlay:
+                self.scene_overlay.render(self.depth_renderer.shader, projection, view, is_rgb=False)
+            self._reset_texture_state(self.depth_renderer.shader)
             GL.glFinish()
             depth_gray = self.exporter.read_depth_buffer_as_gray(w, h)
 
