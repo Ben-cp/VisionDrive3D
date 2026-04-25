@@ -11,6 +11,7 @@ from entity import Scene, Entity
 from camera_suite import Camera, CameraPresetFactory, CameraManager
 from renderers import RenderManager
 from car import Car
+from scene_overlay import SceneOverlay
 from traffic import TrafficManager
 
 
@@ -79,7 +80,8 @@ class ViewerApp:
             near=0.1,
             far=150.0,
         )
-
+        self.scene_overlay = SceneOverlay()
+        
         self.last_time = glfw.get_time()
         self.last_mouse_pos = None
 
@@ -281,6 +283,13 @@ class ViewerApp:
             view = active_cam.view_matrix()
 
             self.render_manager.draw(projection, view)
+
+            if self.render_manager.mode == "RGB":
+                self.scene_overlay.render(
+                    shader_program=self.render_manager.rgb_renderer.shader,
+                    projection=projection,
+                    view=view,
+                )
 
             glfw.swap_buffers(self.window)
 
