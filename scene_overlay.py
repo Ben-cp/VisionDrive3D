@@ -91,34 +91,36 @@ class SceneOverlay:
 
         # Cấu hình offset dễ chỉnh tay sau khi test.
         self.corner_offsets = corner_offsets or [
-            {"name": "north_west", "offset": np.array([-50.0, 0.0, -50.0], dtype=np.float32)},
-            {"name": "north_east", "offset": np.array([50.0, 0.0, -50.0], dtype=np.float32)},
-            {"name": "south_west", "offset": np.array([-50.0, 0.0, 50.0], dtype=np.float32)},
-            {"name": "south_east", "offset": np.array([50.0, 0.0, 50.0], dtype=np.float32)},
+            {"name": "north_west", "offset": np.array([-64.0, 0.0, -64.0], dtype=np.float32)},
+            {"name": "north_east", "offset": np.array([64.0, 0.0, -64.0], dtype=np.float32)},
+            {"name": "south_west", "offset": np.array([-64.0, 0.0, 64.0], dtype=np.float32)},
+            {"name": "south_east", "offset": np.array([64.0, 0.0, 64.0], dtype=np.float32)},
         ]
 
         self.building_entities = self._load_building_entities()
 
-    def _is_old_road_submesh(self, submesh: dict) -> bool:
+    def _is_old_road_submesh(self, submesh: dict, index: int = 0) -> bool:
         """
-        Heuristic lọc phần mặt đường cũ của assets/scene.
-
-        Mặt đường thường là mesh mỏng theo trục Y và chiếm diện tích XZ rất lớn.
-        Các công trình có chiều cao lớn hơn rõ rệt nên được giữ lại.
+        Heuristic lọc phần mặt đường cũ đã được cải tiến.
         """
         verts = np.asarray(submesh.get("vertices"), dtype=np.float32)
         if verts.size == 0:
             return True
-
         vmin = np.min(verts, axis=0)
         vmax = np.max(verts, axis=0)
         extent = vmax - vmin
-
-        xz_area = float(extent[0] * extent[2])
-        thin_y = float(extent[1]) <= 1.25
-        near_ground = float(vmax[1]) <= 2.8
-        very_large = xz_area >= 900.0
-        return thin_y and near_ground and very_large
+        # Lấy thông số
+        height_y = float(extent[1])
+        lowest_y = float(vmin[1])
+        # ĐIỀU KIỆN MỚI: Chỉ cần mesh mỏng (cao độ thấp) VÀ nằm sát mặt đất
+        is_flat = height_y <= 3.5       # Nới lỏng: Cho phép vỉa hè/đường dày tới 3.5 đơn vị
+        is_on_ground = lowest_y <= 1.5  # Nới lỏng: Điểm thấp nhất nằm sát mốc 0
+        # Nếu muốn lọc theo Tên hoặc Material (Cách chính xác nhất):
+        # Bạn có thể kiểm tra submesh.get("name") hoặc ID material ở đây.
+        is_road = is_flat and is_on_ground
+        # Tắt comment dòng lệnh dưới đây nếu bạn muốn kiểm tra tại sao mặt đường vẫn lọt qua
+        print(f"Mesh {index:03d} | Height: {height_y:.2f} | Lowest Y: {lowest_y:.2f} | is_road: {is_road}")
+        return is_road
 
     def _load_building_entities(self) -> list[Entity]:
         """
@@ -132,7 +134,7 @@ class SceneOverlay:
         dropped_count = 0
 
         for idx, submesh in enumerate(scene_mesh.submeshes):
-            if self._is_old_road_submesh(submesh):
+            if self._is_old_road_submesh(submesh, idx):
                 dropped_count += 1
                 continue
 
@@ -200,10 +202,9 @@ class SceneOverlay:
 
         # 2) Draw cụm nhà dân bằng shader của viewer.
         GL.glUseProgram(int(shader_program.render_idx))
-        for translate_m in self._iter_offsets(self.corner_offsets):
-            for ent in self.building_entities:
-                model = translate_m @ ent.world_matrix()
-                ent.mesh.draw(projection, view, model, shader_program)
+        for ent in self.building_entities:
+            model = ent.world_matrix()
+            ent.mesh.draw(projection, view, model, shader_program)
 
         # Dọn state tối thiểu trước khi restore để tránh leak qua pass khác.
         GL.glBindVertexArray(0)

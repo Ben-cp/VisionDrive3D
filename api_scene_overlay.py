@@ -607,6 +607,14 @@ def build_drawables_from_folder(folder: Path):
     for i, data in enumerate(loaded_meshes):
         # model = _grid_model(i, len(loaded_meshes))
         identity_model = np.eye(4, dtype=np.float32)
+        scale_factor = 1.65
+        scale_model = np.eye(4, dtype=np.float32)
+        scale_model[0, 0] = scale_factor  # Thu nhỏ trục X
+        scale_model[1, 1] = scale_factor  # Thu nhỏ trục Y
+        scale_model[2, 2] = scale_factor
+        scale_model[0, 3] = -5.0  # Gán giá trị X
+        scale_model[1, 3] = 0.1  # fixed
+        scale_model[2, 3] = 8.0
         drawables.append(
             RoadMeshDrawable(
                 vertices=data["vertices"],
@@ -614,7 +622,7 @@ def build_drawables_from_folder(folder: Path):
                 uvs=data["uvs"],      # Thêm dòng này
                 image=data["image"],  # Thêm dòng này
                 color=data["color"],
-                model=identity_model,
+                model=scale_model,
             )
         )
     return drawables
