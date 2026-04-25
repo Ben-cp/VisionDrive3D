@@ -184,29 +184,30 @@ class SceneOverlay:
             offset = np.asarray(item.get("offset", [0.0, 0.0, 0.0]), dtype=np.float32)
             yield T.translate(offset).astype(np.float32)
 
-    def render(self, shader_program, projection: np.ndarray, view: np.ndarray):
-        """
-        Render theo thứ tự:
-        1) Base Junction (api_scene_overlay)
-        2) Building entities (entity/mesh pipeline) đặt vào 4 góc.
-
-        shader_program: truyền vào shader RGB hiện tại của viewer.py
-                        (ví dụ render_manager.rgb_renderer.shader).
-        """
+    def render(self, shader_program, projection: np.ndarray, view: np.ndarray, is_rgb: bool = True):
         state_before = self._capture_gl_state()
 
-        # 1) Draw ngã tư nền.
+        # Tính khung cắt (clip_box)
+        x_vals = [item["offset"][0] for item in self.corner_offsets]
+        z_vals = [item["offset"][2] for item in self.corner_offsets]
+        clip_box = {
+            "min_x": float(min(x_vals)) + 17.0, 
+            "max_x": float(max(x_vals)) - 17.0, 
+            "min_z": float(min(z_vals)) + 17.0, 
+            "max_z": float(max(z_vals)) - 17.0, 
+        }
+
+        # 1) Vẽ ngã tư nền (Truyền cờ is_rgb xuống)
         eye_pos = self._extract_eye_pos_from_view(view)
         for drawable in self.base_junction_drawables:
-            drawable.draw(projection, view, eye_pos)
+            drawable.draw(projection, view, shader_program, is_rgb=is_rgb, eye_pos=eye_pos, clip_box=clip_box)
 
-        # 2) Draw cụm nhà dân bằng shader của viewer.
+        # 2) Vẽ nhà dân bằng shader của viewer.py
         GL.glUseProgram(int(shader_program.render_idx))
         for ent in self.building_entities:
             model = ent.world_matrix()
             ent.mesh.draw(projection, view, model, shader_program)
 
-        # Dọn state tối thiểu trước khi restore để tránh leak qua pass khác.
         GL.glBindVertexArray(0)
         GL.glActiveTexture(GL.GL_TEXTURE0)
         GL.glBindTexture(GL.GL_TEXTURE_2D, 0)

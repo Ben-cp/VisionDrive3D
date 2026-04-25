@@ -290,6 +290,13 @@ class ViewerApp:
                     projection=projection,
                     view=view,
                 )
+            else:
+                self.scene_overlay.render(
+                    shader_program=self.render_manager.rgb_renderer.shader,
+                    projection=projection,
+                    view=view,
+                    is_rgb=False, 
+                )
 
             glfw.swap_buffers(self.window)
 

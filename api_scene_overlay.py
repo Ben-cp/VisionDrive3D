@@ -64,9 +64,21 @@ uniform sampler2D diffuse_map; // Đọc ảnh texture
 uniform bool use_texture;      // Cờ kiểm tra xem lưới có texture không
 uniform vec3 base_color;
 
+uniform bool use_clip;
+uniform vec2 clip_x; // vec2(min_x, max_x)
+uniform vec2 clip_z; // vec2(min_z, max_z)
+
 out vec4 fragColor;
 
 void main() {
+    
+    if (use_clip) {
+        if (v_pos.x < clip_x.x || v_pos.x > clip_x.y || 
+            v_pos.z < clip_z.x || v_pos.z > clip_z.y) {
+            discard; 
+        }
+    }
+    
     vec3 N = normalize(v_normal);
     vec3 L = normalize(-light_dir);
     vec3 V = normalize(eye_pos - v_pos);
@@ -382,29 +394,76 @@ class RoadMeshDrawable:
         
         self.vao.add_ebo(self.indices)
 
-    def draw(self, projection: np.ndarray, view: np.ndarray, eye_pos: np.ndarray):
-        GL.glUseProgram(self.shader.render_idx)
-        self.uma.upload_uniform_matrix4fv(projection, "projection", True)
-        self.uma.upload_uniform_matrix4fv(view, "view", True)
-        self.uma.upload_uniform_matrix4fv(self.model, "model", True)
-        self.uma.upload_uniform_vector3fv(self.color, "base_color")
-        self.uma.upload_uniform_vector3fv(np.array([0.6, -0.9, -0.35], dtype=np.float32), "light_dir")
-        self.uma.upload_uniform_vector3fv(np.asarray(eye_pos, dtype=np.float32), "eye_pos")
-
-        loc_use_tex = GL.glGetUniformLocation(self.shader.render_idx, "use_texture")
+    def draw(self, projection: np.ndarray, view: np.ndarray, viewer_shader, is_rgb: bool = True, eye_pos: np.ndarray = None, clip_box: dict = None):
         
-        # Bật Texture nếu mô hình này có texture
-        if self.texture_id > 0:
-            GL.glActiveTexture(GL.GL_TEXTURE0)
-            GL.glBindTexture(GL.GL_TEXTURE_2D, self.texture_id)
-            loc_diff_map = GL.glGetUniformLocation(self.shader.render_idx, "diffuse_map")
-            GL.glUniform1i(loc_diff_map, 0) # Gắn với GL_TEXTURE0
-            if loc_use_tex != -1:
-                GL.glUniform1i(loc_use_tex, 1) # Bật cờ use_texture = True
-        else:
-            if loc_use_tex != -1:
-                GL.glUniform1i(loc_use_tex, 0) # Tắt cờ use_texture = False
+        if is_rgb:
+            # ==========================================
+            # CHẾ ĐỘ RGB: Dùng Shader và cấu hình gốc của bạn
+            # ==========================================
+            active_shader_idx = self.shader.render_idx
+            GL.glUseProgram(active_shader_idx)
+            
+            self.uma.upload_uniform_matrix4fv(projection, "projection", True)
+            self.uma.upload_uniform_matrix4fv(view, "view", True)
+            self.uma.upload_uniform_matrix4fv(self.model, "model", True)
+            self.uma.upload_uniform_vector3fv(self.color, "base_color")
+            self.uma.upload_uniform_vector3fv(np.array([0.6, -0.9, -0.35], dtype=np.float32), "light_dir")
+            
+            if eye_pos is not None:
+                self.uma.upload_uniform_vector3fv(np.asarray(eye_pos, dtype=np.float32), "eye_pos")
 
+            # Xử lý Texture (RGB Mode)
+            loc_use_tex = GL.glGetUniformLocation(active_shader_idx, "use_texture")
+            if self.texture_id > 0:
+                GL.glActiveTexture(GL.GL_TEXTURE0)
+                GL.glBindTexture(GL.GL_TEXTURE_2D, self.texture_id)
+                loc_diff_map = GL.glGetUniformLocation(active_shader_idx, "diffuse_map")
+                if loc_diff_map != -1: GL.glUniform1i(loc_diff_map, 0)
+                if loc_use_tex != -1: GL.glUniform1i(loc_use_tex, 1)
+            else:
+                if loc_use_tex != -1: GL.glUniform1i(loc_use_tex, 0)
+
+        else:
+            # ==========================================
+            # CHẾ ĐỘ KHÁC (Depth, Seg...): Dùng Shader của Viewer
+            # ==========================================
+            active_shader_idx = viewer_shader.render_idx
+            GL.glUseProgram(active_shader_idx)
+            
+            uma_viewer = UManager(viewer_shader)
+            modelview = view @ self.model
+            
+            uma_viewer.upload_uniform_matrix4fv(projection, "projection", transpose=True)
+            uma_viewer.upload_uniform_matrix4fv(modelview, "modelview", transpose=True)
+            uma_viewer.upload_uniform_matrix4fv(self.model, "model", transpose=True)
+            
+            # Setup texture cơ bản nếu các mode khác có dùng map alpha/mask
+            if self.texture_id > 0:
+                GL.glActiveTexture(GL.GL_TEXTURE0)
+                GL.glBindTexture(GL.GL_TEXTURE_2D, self.texture_id)
+                uma_viewer.upload_uniform_scalar1i(0, "diffuse_map")
+                uma_viewer.upload_uniform_scalar1i(1, "has_texture") 
+            else:
+                GL.glActiveTexture(GL.GL_TEXTURE0)
+                GL.glBindTexture(GL.GL_TEXTURE_2D, 0)
+                uma_viewer.upload_uniform_scalar1i(0, "has_texture")
+
+
+        # ==========================================
+        # LOGIC CẮT GỌT (CLIPPING) - Áp dụng chung cho mọi Shader
+        # ==========================================
+        loc_use_clip = GL.glGetUniformLocation(active_shader_idx, "use_clip")
+        if loc_use_clip != -1:
+            if clip_box is not None:
+                GL.glUniform1i(loc_use_clip, 1)
+                loc_clip_x = GL.glGetUniformLocation(active_shader_idx, "clip_x")
+                loc_clip_z = GL.glGetUniformLocation(active_shader_idx, "clip_z")
+                GL.glUniform2f(loc_clip_x, clip_box["min_x"], clip_box["max_x"])
+                GL.glUniform2f(loc_clip_z, clip_box["min_z"], clip_box["max_z"])
+            else:
+                GL.glUniform1i(loc_use_clip, 0)
+
+        # Draw call
         self.vao.activate()
         GL.glDrawElements(GL.GL_TRIANGLES, int(self.indices.size), GL.GL_UNSIGNED_INT, None)
         self.vao.deactivate()
@@ -607,14 +666,14 @@ def build_drawables_from_folder(folder: Path):
     for i, data in enumerate(loaded_meshes):
         # model = _grid_model(i, len(loaded_meshes))
         identity_model = np.eye(4, dtype=np.float32)
-        scale_factor = 1.65
+        scale_factor = 1.78
         scale_model = np.eye(4, dtype=np.float32)
         scale_model[0, 0] = scale_factor  # Thu nhỏ trục X
         scale_model[1, 1] = scale_factor  # Thu nhỏ trục Y
         scale_model[2, 2] = scale_factor
-        scale_model[0, 3] = -5.0  # Gán giá trị X
-        scale_model[1, 3] = 0.1  # fixed
-        scale_model[2, 3] = 8.0
+        scale_model[0, 3] = -7.0  # Gán giá trị X
+        scale_model[1, 3] = 0.2  # fixed
+        scale_model[2, 3] = 28.6
         drawables.append(
             RoadMeshDrawable(
                 vertices=data["vertices"],

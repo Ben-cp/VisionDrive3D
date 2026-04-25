@@ -78,12 +78,12 @@ class RenderManager:
     - one-call export_current_frame(): RGB + Mask + Depth + YOLO labels
     """
 
-    def __init__(self, scene, base_dir: str, output_dir: str = "outputs", near: float = 0.1, far: float = 150.0):
+    def __init__(self, scene, base_dir: str, scene_overlay=None, output_dir: str = "outputs", near: float = 0.1, far: float = 150.0):
         self.scene = scene
         self.rgb_renderer = RGBRenderer(base_dir)
         self.mask_renderer = MaskRenderer(base_dir)
         self.depth_renderer = DepthRenderer(base_dir, near=near, far=far)
-
+        self.scene_overlay = scene_overlay
         self.bbox_calculator = BBoxCalculator()
         self.exporter = DatasetExporter(output_dir=output_dir)
 
@@ -96,12 +96,24 @@ class RenderManager:
             self.mode = mode
 
     def draw(self, projection: np.ndarray, view: np.ndarray):
+        GL.glActiveTexture(GL.GL_TEXTURE0)
+        GL.glBindTexture(GL.GL_TEXTURE_2D, 0)
         if self.mode == "RGB":
             self.rgb_renderer.render(self.scene, projection, view)
+            if self.scene_overlay:
+                self.scene_overlay.render(self.rgb_renderer.shader, projection, view, is_rgb=True)
+                GL.glBindTexture(GL.GL_TEXTURE_2D, 0)
+
         elif self.mode == "MASK":
+            # Trước khi render Mask, đảm bảo shader không hiểu nhầm có texture
             self.mask_renderer.render(self.scene, projection, view)
+            if self.scene_overlay:
+                self.scene_overlay.render(self.mask_renderer.shader, projection, view, is_rgb=False)
+
         elif self.mode == "DEPTH":
             self.depth_renderer.render(self.scene, projection, view)
+            if self.scene_overlay:
+                self.scene_overlay.render(self.depth_renderer.shader, projection, view, is_rgb=False)
 
     def _render_pass(self, renderer, projection: np.ndarray, view: np.ndarray):
         GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)

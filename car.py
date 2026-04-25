@@ -188,7 +188,7 @@ class Car(Entity):
         target_speed: float = 5.0,
     ):
         """Teleport & reset this car for reuse from the object pool."""
-        self.place_on_surface(x, z, 0.05)  # ground_y = 0.05
+        self.place_on_surface(x, z, 0.25)  # ground_y = 0.05
         self.rotation[1] = float(yaw)
         self.waypoints = list(waypoints)
         self.current_wp_idx = 0
