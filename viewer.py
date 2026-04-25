@@ -11,6 +11,7 @@ from entity import Scene, Entity
 from camera_suite import Camera, CameraPresetFactory, CameraManager
 from renderers import RenderManager
 from car import Car
+from scene_overlay import SceneOverlay
 from traffic import TrafficManager
 
 
@@ -72,14 +73,16 @@ class ViewerApp:
         self._camera_host_car = None  # the traffic car cameras are attached to
 
         base_dir = os.path.dirname(os.path.abspath(__file__))
+        self.scene_overlay = SceneOverlay()
         self.render_manager = RenderManager(
             scene=self.scene,
             base_dir=base_dir,
+            scene_overlay=self.scene_overlay,
             output_dir=os.path.join(base_dir, "outputs"),
             near=0.1,
             far=150.0,
         )
-
+        
         self.last_time = glfw.get_time()
         self.last_mouse_pos = None
 
