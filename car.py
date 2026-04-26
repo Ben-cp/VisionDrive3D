@@ -65,6 +65,7 @@ class Car(Entity):
         self.speed = 0.0
         self.target_speed = float(random.uniform(3.0, 5.0))
         self.wheel_radius = 0.35
+        self._wheelbase = 2.6
 
         # --- Waypoint / pool state ---
         self.waypoints: List[Tuple[float, float]] = []
@@ -73,7 +74,11 @@ class Car(Entity):
         self.route_finished: bool = False
         self._yaw_lerp_factor: float = 5.0   # lerp speed for yaw smoothing
         self._steer_lerp_factor: float = 8.0 # lerp speed for steering smoothing
-        self._lookahead_wps: int = 3         # how many waypoints ahead to look
+        self._path_follow_lerp_factor: float = 6.0
+        self._lookahead_distance: float = 6.5
+        self._max_steering_angle: float = 30.0
+        self._visual_steering_gain: float = 1.45
+        self._max_visual_steering_angle: float = 42.0
 
         self._mesh_proxy = _CarMeshProxy(self)
         self._standalone_shader: Optional[Shader] = None
@@ -111,62 +116,57 @@ class Car(Entity):
             self.route_finished = True
             return
 
-        current_yaw = float(self.rotation[1])
-
-        # --- Current target waypoint ---
-        wx, wz = self.waypoints[self.current_wp_idx]
         px, pz = float(self.position[0]), float(self.position[2])
-        dx, dz = wx - px, wz - pz
-        dist = math.hypot(dx, dz)
+        arrival_radius = max(0.9, min(1.8, 0.55 * max(1.0, self.speed)))
 
-        # Calculate forward vector to see if waypoint is behind the car
-        fwd_x = math.sin(math.radians(current_yaw))
-        fwd_z = math.cos(math.radians(current_yaw))
-        dot_product = dx * fwd_x + dz * fwd_z
-
-        # Advance waypoint if close enough OR if the car has passed it
-        if dist < 2.5 or dot_product < 0.0:
-            self.current_wp_idx += 1
-            if self.current_wp_idx >= len(self.waypoints):
-                self.route_finished = True
-                return
+        while self.current_wp_idx < len(self.waypoints):
             wx, wz = self.waypoints[self.current_wp_idx]
-            dx, dz = wx - px, wz - pz
-            dist = math.hypot(dx, dz)
+            if math.hypot(wx - px, wz - pz) <= arrival_radius or self._has_passed_waypoint(
+                px, pz, self.current_wp_idx
+            ):
+                self.current_wp_idx += 1
+                continue
+            break
 
-        # --- Lookahead: pick a point several waypoints ahead for smoother steering ---
-        lookahead_idx = min(
-            self.current_wp_idx + self._lookahead_wps,
-            len(self.waypoints) - 1,
-        )
-        lx, lz = self.waypoints[lookahead_idx]
+        if self.current_wp_idx >= len(self.waypoints):
+            self.route_finished = True
+            return
+
+        lookahead_distance = max(4.0, self._lookahead_distance + 0.45 * float(self.speed))
+        lx, lz = self._path_lookahead_point(px, pz, lookahead_distance)
         ldx, ldz = lx - px, lz - pz
         ldist = math.hypot(ldx, ldz)
-
-        # --- Smooth yaw toward lookahead waypoint ---
-        if ldist > 0.01:
-            target_yaw = math.degrees(math.atan2(ldx, ldz))  # atan2(sin, cos)
-        else:
-            target_yaw = float(self.rotation[1])
-
         current_yaw = float(self.rotation[1])
 
-        # Shortest-arc delta
-        delta_yaw = (target_yaw - current_yaw + 180.0) % 360.0 - 180.0
+        if ldist > 1e-4:
+            target_yaw = math.degrees(math.atan2(ldx, ldz))
+            delta_yaw = self._wrap_angle_deg(target_yaw - current_yaw)
+        else:
+            delta_yaw = 0.0
 
-        # Exponential lerp for smooth yaw rotation
-        lerp_t = min(1.0, self._yaw_lerp_factor * dt)
-        new_yaw = current_yaw + delta_yaw * lerp_t
-        self.rotation[1] = float(new_yaw % 360.0)
-
-        # --- Smooth steering angle (visual front-wheel offset) ---
-        target_steering = float(max(-35.0, min(35.0, delta_yaw * 1.5)))
-        steer_lerp = min(1.0, self._steer_lerp_factor * dt)
+        target_steering = self._pure_pursuit_steering(ldx, ldz, current_yaw)
+        target_steering = float(
+            max(
+                -self._max_visual_steering_angle,
+                min(self._max_visual_steering_angle, target_steering * self._visual_steering_gain),
+            )
+        )
+        steer_lerp = 1.0 - math.exp(-self._steer_lerp_factor * dt)
         self.steering_angle += (target_steering - self.steering_angle) * steer_lerp
 
-        # --- Move forward ---
+        yaw_lerp = 1.0 - math.exp(-self._yaw_lerp_factor * dt)
+        new_yaw = current_yaw + delta_yaw * yaw_lerp
+        self.rotation[1] = float(new_yaw % 360.0)
+
         distance = self.speed * dt
         forward = self._movement_forward_world()
+        if ldist > 1e-4:
+            desired_dir = np.array([ldx / ldist, 0.0, ldz / ldist], dtype=np.float32)
+            move_lerp = 1.0 - math.exp(-self._path_follow_lerp_factor * dt)
+            move_dir = (1.0 - move_lerp) * forward + move_lerp * desired_dir
+            norm = float(np.linalg.norm(move_dir))
+            if norm > 1e-6:
+                forward = (move_dir / norm).astype(np.float32)
         self.position += forward * distance
 
         # --- Spin wheels ---
@@ -175,6 +175,105 @@ class Car(Entity):
             delta_angle_deg = math.degrees(delta_angle_rad)
             for k in self.wheel_spin_angle:
                 self.wheel_spin_angle[k] += delta_angle_deg
+
+    @staticmethod
+    def _wrap_angle_deg(angle_deg: float) -> float:
+        return (float(angle_deg) + 180.0) % 360.0 - 180.0
+
+    def _has_passed_waypoint(self, px: float, pz: float, wp_idx: int) -> bool:
+        if wp_idx < 0 or wp_idx >= len(self.waypoints):
+            return False
+
+        tx, tz = self.waypoints[wp_idx]
+        if wp_idx == 0:
+            if len(self.waypoints) > 1:
+                next_x, next_z = self.waypoints[1]
+                prev_x = tx - (next_x - tx)
+                prev_z = tz - (next_z - tz)
+            else:
+                prev_x, prev_z = px, pz
+        else:
+            prev_x, prev_z = self.waypoints[wp_idx - 1]
+
+        seg_x = tx - prev_x
+        seg_z = tz - prev_z
+        seg_len_sq = seg_x * seg_x + seg_z * seg_z
+        if seg_len_sq <= 1e-8:
+            return False
+
+        past_x = px - tx
+        past_z = pz - tz
+        return past_x * seg_x + past_z * seg_z > 0.0
+
+    @staticmethod
+    def _closest_point_on_segment(
+        px: float,
+        pz: float,
+        ax: float,
+        az: float,
+        bx: float,
+        bz: float,
+    ) -> Tuple[float, float]:
+        abx = bx - ax
+        abz = bz - az
+        denom = abx * abx + abz * abz
+        if denom <= 1e-8:
+            return ax, az
+
+        t = ((px - ax) * abx + (pz - az) * abz) / denom
+        t = max(0.0, min(1.0, t))
+        return ax + abx * t, az + abz * t
+
+    def _path_lookahead_point(
+        self,
+        px: float,
+        pz: float,
+        lookahead_distance: float,
+    ) -> Tuple[float, float]:
+        if self.current_wp_idx >= len(self.waypoints):
+            return px, pz
+
+        curr_x, curr_z = self.waypoints[self.current_wp_idx]
+        if self.current_wp_idx == 0:
+            start_x, start_z = px, pz
+        else:
+            start_x, start_z = self.waypoints[self.current_wp_idx - 1]
+
+        cursor_x, cursor_z = self._closest_point_on_segment(
+            px, pz, start_x, start_z, curr_x, curr_z
+        )
+        remaining = float(max(0.0, lookahead_distance))
+        seg_idx = self.current_wp_idx
+
+        while seg_idx < len(self.waypoints):
+            end_x, end_z = self.waypoints[seg_idx]
+            seg_dx = end_x - cursor_x
+            seg_dz = end_z - cursor_z
+            seg_len = math.hypot(seg_dx, seg_dz)
+
+            if seg_len > 1e-6 and remaining <= seg_len:
+                t = remaining / seg_len
+                return cursor_x + seg_dx * t, cursor_z + seg_dz * t
+
+            if seg_len > 1e-6:
+                remaining -= seg_len
+
+            cursor_x, cursor_z = end_x, end_z
+            seg_idx += 1
+
+        return cursor_x, cursor_z
+
+    def _pure_pursuit_steering(self, ldx: float, ldz: float, current_yaw: float) -> float:
+        lookahead_len = math.hypot(ldx, ldz)
+        if lookahead_len <= 1e-4:
+            return 0.0
+
+        yaw_rad = math.radians(current_yaw)
+        local_x = ldx * math.cos(yaw_rad) - ldz * math.sin(yaw_rad)
+        curvature = (2.0 * local_x) / max(1e-4, lookahead_len * lookahead_len)
+        steer_rad = math.atan(curvature * float(self._wheelbase))
+        steer_deg = math.degrees(steer_rad)
+        return float(max(-self._max_steering_angle, min(self._max_steering_angle, steer_deg)))
 
     # ------------------------------------------------------------------
     # Object pool helpers
@@ -582,4 +681,5 @@ class Car(Entity):
         self.local_aabb_min = mn.astype(np.float32)
         self.local_aabb_max = mx.astype(np.float32)
         self.local_size = (self.local_aabb_max - self.local_aabb_min).astype(np.float32)
+        self._wheelbase = max(1.8, float(self.local_size[2]) * 0.55)
         self.bottom_y_offset = float(-self.local_aabb_min[1])   # Y-up → keep [1]
