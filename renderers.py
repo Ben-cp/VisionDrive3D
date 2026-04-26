@@ -200,5 +200,13 @@ class RenderManager:
             camera_data=camera_data
         )
 
+        # Store paths for active camera hook access
+        active_cam_name = camera_manager.get_active_camera().name
+        stem = f"{self.frame_idx:06d}"
+        pfx = f"{active_cam_name}_{stem}"
+        self.last_exported_rgb_path = os.path.join(self.exporter.rgb_dir, f"{pfx}.png")
+        self.last_exported_mask_path = os.path.join(self.exporter.mask_dir, f"{pfx}.png")
+        self.last_exported_depth_path = os.path.join(self.exporter.depth_dir, f"{pfx}.png")
+
         self.frame_idx += 1
         self.mode = old_mode

@@ -13,6 +13,7 @@ from renderers import RenderManager
 from car import Car
 from scene_overlay import SceneOverlay
 from traffic import TrafficManager
+from src.dataset.dataset_manager import DatasetManager
 
 
 def instance_color_from_id(idx: int) -> tuple[float, float, float]:
@@ -93,6 +94,11 @@ class ViewerApp:
         glfw.set_cursor_pos_callback(self.window, self._on_mouse_move)
 
         self._load_scene_assets(base_dir)
+
+        self.scene_id = 0
+        self.dataset_manager = DatasetManager(
+            root="./output_dataset", validate=True
+        )
 
     # ------------------------------------------------------------------
     # Camera ↔ traffic car attachment
@@ -234,6 +240,64 @@ class ViewerApp:
             # We don't render to screen, just export the camera bounds
             self.render_manager.export_current_frame(self.camera_manager)
             print(f"Generated frame {self.render_manager.frame_idx - 1:06d}")
+
+            # --- Dataset export hook ---
+            frame_idx = self.render_manager.frame_idx - 1
+            paths = self.dataset_manager.begin_export(self.scene_id)
+
+            active_cam = self.camera_manager.get_active_camera()
+            camera_params = {
+                "position": active_cam.position.tolist(),
+                "target":   active_cam.target.tolist() if hasattr(active_cam, 'target') else (active_cam.position + active_cam.front).tolist(),
+                "up":       active_cam.up.tolist() if hasattr(active_cam, 'up') else [0,1,0],
+                "fov_deg":  active_cam.fov if hasattr(active_cam, 'fov') else 45.0,
+                "near":     active_cam.near,
+                "far":      active_cam.far,
+                "intrinsic_matrix":  active_cam.get_intrinsics().tolist(),
+                "extrinsic_matrix":  active_cam.get_extrinsics().tolist(),
+            }
+
+            objects = []
+            for entity in self.scene.entities:
+                objects.append({
+                    "instance_id":    getattr(entity, "instance_id", id(entity)),
+                    "class_name":     getattr(entity, "class_name", type(entity).__name__),
+                    "position_world": entity.position.tolist(),
+                    "rotation_euler": getattr(entity, "rotation", [0,0,0]),
+                    "scale":          getattr(entity, "scale", [1,1,1]),
+                    "bbox_2d":        getattr(entity, "bbox_2d", [0,0,0,0]),
+                    "visible":        getattr(entity, "visible", True),
+                    "occlusion_ratio":getattr(entity, "occlusion_ratio", 0.0),
+                })
+
+            render_config = {
+                "resolution": list(active_cam.resolution),
+                "lighting":   "directional",
+                "num_lights": len(getattr(self.scene, "lights", [])),
+                "background": "road_scene",
+            }
+
+            # Read back files already written by export_current_frame
+            import cv2, numpy as np
+            from pathlib import Path
+
+            existing_rgb   = cv2.imread(str(self.render_manager.last_exported_rgb_path))
+            existing_depth = np.load(str(self.render_manager.last_exported_depth_path)) \
+                             if Path(self.render_manager.last_exported_depth_path).suffix == ".npy" \
+                             else cv2.imread(str(self.render_manager.last_exported_depth_path), cv2.IMREAD_GRAYSCALE)
+            existing_mask  = cv2.imread(str(self.render_manager.last_exported_mask_path), cv2.IMREAD_GRAYSCALE)
+
+            self.dataset_manager.finish_scene(
+                scene_id=self.scene_id,
+                camera_params=camera_params,
+                objects=objects,
+                render_config=render_config,
+                rgb_image=existing_rgb,
+                depth_map=existing_depth,
+                seg_mask=existing_mask,
+            )
+            self.scene_id += 1
+            # --- End dataset export hook ---
         print("--- Automated generation complete ---")
 
     def _on_mouse_move(self, _win, xpos, ypos):
