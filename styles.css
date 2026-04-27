@@ -407,6 +407,13 @@ figcaption {
   box-shadow: var(--shadow-md);
 }
 
+.latest-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 0.9rem;
+}
+
 .links {
   margin: 0;
   padding-left: 1.2rem;
@@ -459,6 +466,10 @@ figcaption {
   }
 
   .qual-row {
+    grid-template-columns: 1fr;
+  }
+
+  .latest-grid {
     grid-template-columns: 1fr;
   }
 
