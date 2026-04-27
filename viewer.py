@@ -464,24 +464,24 @@ class ViewerApp:
                         return {str(k): _to_native(val) for k, val in v.items()}
                     return v
 
-                def _dbg(hypothesis_id, message, data):
-                    # region agent log
-                    try:
-                        payload = {
-                            "sessionId": "7b13d0",
-                            "runId": "pre-fix",
-                            "hypothesisId": hypothesis_id,
-                            "location": "viewer.py:project_entity_bbox",
-                            "message": message,
-                            "data": _to_native(data),
-                            "timestamp": int(time.time() * 1000),
-                        }
-                        with open("/home/ml4u/BKTeam/ChiDai/VisionDrive3D/.cursor/debug-7b13d0.log", "a", encoding="utf-8") as f:
-                            f.write(json.dumps(payload) + "\n")
-                    except Exception as e:
-                        print(f"DEBUG_LOG_WRITE_ERROR: {e}")
-                    # endregion
-                _dbg("H0", "entry", {"entity_type": type(entity).__name__})
+                # def _dbg(hypothesis_id, message, data):
+                #     # region agent log
+                #     try:
+                #         payload = {
+                #             "sessionId": "7b13d0",
+                #             "runId": "pre-fix",
+                #             "hypothesisId": hypothesis_id,
+                #             "location": "viewer.py:project_entity_bbox",
+                #             "message": message,
+                #             "data": _to_native(data),
+                #             "timestamp": int(time.time() * 1000),
+                #         }
+                #         with open("/home/ml4u/BKTeam/ChiDai/VisionDrive3D/.cursor/debug-7b13d0.log", "a", encoding="utf-8") as f:
+                #             f.write(json.dumps(payload) + "\n")
+                #     except Exception as e:
+                #         print(f"DEBUG_LOG_WRITE_ERROR: {e}")
+                #     # endregion
+                # _dbg("H0", "entry", {"entity_type": type(entity).__name__})
 
                 pos = np.array(
                     getattr(entity, "position",
@@ -578,22 +578,22 @@ class ViewerApp:
 
                 near = 0.1
                 valid = cz < -near
-                if "car" in type(entity).__name__.lower():
-                    alt_valid = cz > near
-                    _dbg("H1", "depth-sign-check", {
-                        "pos": pos,
-                        "cz_min": float(np.min(cz)),
-                        "cz_max": float(np.max(cz)),
-                        "valid_negz": int(np.count_nonzero(valid)),
-                        "valid_posz": int(np.count_nonzero(alt_valid)),
-                    })
-                    _dbg("H2", "transform-inputs", {
-                        "raw_scale": raw_scale,
-                        "scale": scale,
-                        "mesh_extents": extents if extents is not None else "None",
-                        "ry_deg": ry_deg,
-                        "rot_source": rot,
-                    })
+                # if "car" in type(entity).__name__.lower():
+                    # alt_valid = cz > near
+                    # _dbg("H1", "depth-sign-check", {
+                    #     "pos": pos,
+                    #     "cz_min": float(np.min(cz)),
+                    #     "cz_max": float(np.max(cz)),
+                    #     "valid_negz": int(np.count_nonzero(valid)),
+                    #     "valid_posz": int(np.count_nonzero(alt_valid)),
+                    # })
+                    # _dbg("H2", "transform-inputs", {
+                    #     "raw_scale": raw_scale,
+                    #     "scale": scale,
+                    #     "mesh_extents": extents if extents is not None else "None",
+                    #     "ry_deg": ry_deg,
+                    #     "rot_source": rot,
+                    # })
                 if not valid.any():
                     return [0, 0, 0, 0]
 
@@ -605,26 +605,26 @@ class ViewerApp:
                 px = fx * (cx[valid] / depth) + ppx
                 py_old = fy * (cy[valid] / depth) + ppy
                 py = fy * (-cy[valid] / depth) + ppy
-                if "car" in type(entity).__name__.lower():
-                    _dbg("H4", "y-axis-sign", {
-                        "py_old_minmax": [float(np.min(py_old)), float(np.max(py_old))],
-                        "py_new_minmax": [float(np.min(py)), float(np.max(py))],
-                        "used": "py_new_negated_cy",
-                    })
+                # if "car" in type(entity).__name__.lower():
+                #     _dbg("H4", "y-axis-sign", {
+                #         "py_old_minmax": [float(np.min(py_old)), float(np.max(py_old))],
+                #         "py_new_minmax": [float(np.min(py)), float(np.max(py))],
+                #         "used": "py_new_negated_cy",
+                #     })
 
                 px = np.clip(px, 0, w)
                 py = np.clip(py, 0, h)
 
                 x0, y0 = int(np.min(px)), int(np.min(py))
                 x1, y1 = int(np.max(px)), int(np.max(py))
-                if "car" in type(entity).__name__.lower():
-                    _dbg("H3", "bbox-raw", {
-                        "bbox_xyxy": [x0, y0, x1, y1],
-                        "bbox_wh": [x1 - x0, y1 - y0],
-                        "px_minmax": [float(np.min(px)), float(np.max(px))],
-                        "py_minmax": [float(np.min(py)), float(np.max(py))],
-                        "touches_border": bool(x0 == 0 or y0 == 0 or x1 == w or y1 == h),
-                    })
+                # if "car" in type(entity).__name__.lower():
+                #     _dbg("H3", "bbox-raw", {
+                #         "bbox_xyxy": [x0, y0, x1, y1],
+                #         "bbox_wh": [x1 - x0, y1 - y0],
+                #         "px_minmax": [float(np.min(px)), float(np.max(px))],
+                #         "py_minmax": [float(np.min(py)), float(np.max(py))],
+                #         "touches_border": bool(x0 == 0 or y0 == 0 or x1 == w or y1 == h),
+                #     })
 
                 if x1 - x0 < 4 or y1 - y0 < 4:
                     return [0, 0, 0, 0]
