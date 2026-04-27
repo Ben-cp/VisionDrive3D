@@ -265,15 +265,17 @@ class ViewerApp:
 
             objects = []
             for entity in self.scene.entities:
+                obj_class = getattr(entity, "class_name", type(entity).__name__)
                 objects.append({
                     "instance_id":    getattr(entity, "instance_id", id(entity)),
-                    "class_name":     getattr(entity, "class_name", type(entity).__name__),
+                    "class_name":     obj_class,
                     "position_world": entity.position.tolist(),
                     "rotation_euler": getattr(entity, "rotation", [0,0,0]),
                     "scale":          getattr(entity, "scale", [1,1,1]),
                     "bbox_2d":        getattr(entity, "bbox_2d", [0,0,0,0]),
                     "visible":        getattr(entity, "visible", True),
                     "occlusion_ratio":getattr(entity, "occlusion_ratio", 0.0),
+                    "annotate":       obj_class not in {"Entity", "entity"},
                 })
 
             render_config = {
@@ -386,7 +388,7 @@ class ViewerApp:
 
         for i in range(num_frames):
             GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self._fbo)
-            GL.glViewport(0, 0, w, h)
+            GL.glClearColor(0.18, 0.20, 0.24, 1.0)
             GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
 
             # Randomize scene for variety (reuse existing scene logic)
@@ -408,34 +410,35 @@ class ViewerApp:
             projection = active_cam.get_projection_matrix(w / h) if hasattr(active_cam, 'get_projection_matrix') else active_cam.projection_matrix()
             view       = active_cam.get_view_matrix() if hasattr(active_cam, 'get_view_matrix') else active_cam.view_matrix()
 
+            # 1. Main render
             self.render_manager.draw(projection, view)
-
-            # Read pixels directly from FBO — no window swap needed
             GL.glFlush()
-            raw = GL.glReadPixels(0, 0, w, h,
-                                  GL.GL_RGB, GL.GL_UNSIGNED_BYTE)
+
+            # 2. Read RGB IMMEDIATELY — before any mask pass touches the buffer
+            raw = GL.glReadPixels(0, 0, w, h, GL.GL_RGB, GL.GL_UNSIGNED_BYTE)
             import numpy as np
             rgb = np.frombuffer(raw, dtype=np.uint8).reshape(h, w, 3)
-            rgb = np.flipud(rgb)           # OpenGL origin is bottom-left
+            rgb = np.flipud(rgb)
 
-            # Read depth buffer
+            # 3. Read depth buffer (also before mask pass)
             raw_d = GL.glReadPixels(0, 0, w, h,
                                     GL.GL_DEPTH_COMPONENT, GL.GL_FLOAT)
             depth = np.frombuffer(raw_d, dtype=np.float32).reshape(h, w)
             depth = np.flipud(depth)
+            near, far = active_cam.near, active_cam.far
+            depth = (2.0 * near * far) / (
+                far + near - (depth * 2.0 - 1.0) * (far - near)
+            )
 
-            # Linearize depth from NDC [0,1] to world units
-            near  = active_cam.near
-            far   = active_cam.far
-            depth = (2.0 * near * far) / (far + near - (depth * 2.0 - 1.0) * (far - near))
-
-            # Trigger mask render pass before reading the mask buffer
+            # 4. NOW trigger mask pass (it can overwrite the color buffer freely)
             self.render_manager._reset_texture_state(self.render_manager.mask_renderer.shader)
             self.render_manager.mask_renderer.render(self.scene, projection, view)
             if self.render_manager.scene_overlay:
                 self.render_manager.scene_overlay.render(self.render_manager.mask_renderer.shader, projection, view, is_rgb=False)
             self.render_manager._reset_texture_state(self.render_manager.mask_renderer.shader)
             GL.glFinish()
+            GL.glClearColor(0.18, 0.20, 0.24, 1.0)
+            GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self._fbo)
 
             if hasattr(self.render_manager, 'exporter') and hasattr(self.render_manager.exporter, 'read_rgb_buffer'):
                 seg_mask = self.render_manager.exporter.read_rgb_buffer(w, h)
@@ -446,110 +449,185 @@ class ViewerApp:
                 seg_mask = (depth_norm * 255).astype(np.uint8)
 
             def project_entity_bbox(entity, projection, view, w, h):
-                """
-                Project the 8 corners of the entity's axis-aligned bounding box
-                into screen space and return the 2D screen-space bbox that
-                tightly contains all visible corners.
-                """
                 import numpy as np
+                import json
+                import time
 
-                # --- Get entity transform components ---
-                pos   = np.array(getattr(entity, "position", [0,0,0])[:3],
-                                 dtype=np.float32)
-                scale = np.array(getattr(entity, "scale", [1,1,1]),
-                                 dtype=np.float32)
-                if np.isscalar(scale):
-                    scale = np.array([scale, scale, scale], dtype=np.float32)
-                scale = np.atleast_1d(scale)
-                if scale.shape[0] == 1:
-                    scale = np.array([scale[0], scale[0], scale[0]])
+                def _to_native(v):
+                    if isinstance(v, np.generic):
+                        return v.item()
+                    if isinstance(v, np.ndarray):
+                        return v.tolist()
+                    if isinstance(v, (list, tuple)):
+                        return [_to_native(x) for x in v]
+                    if isinstance(v, dict):
+                        return {str(k): _to_native(val) for k, val in v.items()}
+                    return v
 
-                # --- Estimate half-extents from entity type ---
-                # Try to read from entity.mesh_extents or entity.bbox_local if
-                # they exist. Otherwise use class-name defaults.
-                local_extents = getattr(entity, "mesh_extents", None)
-                if local_extents is None:
-                    local_extents = getattr(entity, "bbox_local", None)
+                def _dbg(hypothesis_id, message, data):
+                    # region agent log
+                    try:
+                        payload = {
+                            "sessionId": "7b13d0",
+                            "runId": "pre-fix",
+                            "hypothesisId": hypothesis_id,
+                            "location": "viewer.py:project_entity_bbox",
+                            "message": message,
+                            "data": _to_native(data),
+                            "timestamp": int(time.time() * 1000),
+                        }
+                        with open("/home/ml4u/BKTeam/ChiDai/VisionDrive3D/.cursor/debug-7b13d0.log", "a", encoding="utf-8") as f:
+                            f.write(json.dumps(payload) + "\n")
+                    except Exception as e:
+                        print(f"DEBUG_LOG_WRITE_ERROR: {e}")
+                    # endregion
+                _dbg("H0", "entry", {"entity_type": type(entity).__name__})
 
-                if local_extents is not None:
-                    # entity exposes its own local AABB half-extents [hx, hy, hz]
-                    hx, hy, hz = np.array(local_extents, dtype=np.float32) * scale
+                pos = np.array(
+                    getattr(entity, "position",
+                    getattr(entity, "position_world", [0,0,0]))[:3],
+                    dtype=np.float32)
+
+                raw_scale = getattr(entity, "scale", [1,1,1])
+                if np.isscalar(raw_scale):
+                    scale = np.array([raw_scale]*3, dtype=np.float32)
                 else:
-                    # Fallback: class-name based defaults in world units (metres)
-                    class_name = getattr(entity, "class_name",
-                                         type(entity).__name__).lower()
-                    defaults = {
-                        "car":          (2.0, 0.8, 1.0),   # half: width, height, depth
-                        "truck":        (2.5, 1.2, 1.5),
-                        "pedestrian":   (0.4, 0.9, 0.4),
-                        "trafficlight": (0.2, 0.6, 0.2),
-                        "trafficsign":  (0.3, 0.3, 0.1),
-                        "entity":       (0.3, 0.3, 0.3),
-                    }
-                    # Fuzzy match: check if any key is a substring of class_name
-                    hw, hh, hd = (1.0, 0.5, 0.5)  # generic fallback
-                    for key, dims in defaults.items():
-                        if key in class_name:
-                            hw, hh, hd = dims
-                            break
-                    hx = hw * float(scale[0])
-                    hy = hh * float(scale[1])
-                    hz = hd * float(scale[2])
+                    scale = np.atleast_1d(np.array(raw_scale, dtype=np.float32))
+                    if scale.shape[0] == 1:
+                        scale = np.array([scale[0]]*3, dtype=np.float32)
 
-                # --- Build 8 corners of the AABB in world space ---
-                corners_local = np.array([
-                    [-hx, -hy, -hz],
-                    [ hx, -hy, -hz],
-                    [-hx,  hy, -hz],
-                    [ hx,  hy, -hz],
-                    [-hx, -hy,  hz],
-                    [ hx, -hy,  hz],
-                    [-hx,  hy,  hz],
-                    [ hx,  hy,  hz],
-                ], dtype=np.float32)
+                extents = getattr(entity, "mesh_extents", None)
+                corners_local = None
 
-                # Apply rotation if available (Y-axis rotation only, from euler degrees)
-                rotation = getattr(entity, "rotation_euler",
-                           getattr(entity, "rotation", [0,0,0]))
-                if rotation is not None:
-                    ry = float(np.array(rotation).flat[1] if
-                               len(np.atleast_1d(rotation)) > 1 else 0)
-                    ry_rad = np.deg2rad(ry)
-                    cos_r, sin_r = np.cos(ry_rad), np.sin(ry_rad)
-                    Ry = np.array([
-                        [ cos_r, 0, sin_r],
-                        [     0, 1,     0],
-                        [-sin_r, 0, cos_r],
+                local_aabb_min = getattr(entity, "local_aabb_min", None)
+                local_aabb_max = getattr(entity, "local_aabb_max", None)
+                if local_aabb_min is not None and local_aabb_max is not None:
+                    local_aabb_min = np.atleast_1d(np.array(local_aabb_min, dtype=np.float32))
+                    local_aabb_max = np.atleast_1d(np.array(local_aabb_max, dtype=np.float32))
+                    if local_aabb_min.shape[0] >= 3 and local_aabb_max.shape[0] >= 3:
+                        lmin = local_aabb_min[:3]
+                        lmax = local_aabb_max[:3]
+                        if (
+                            np.all(np.isfinite(lmin))
+                            and np.all(np.isfinite(lmax))
+                            and np.any(np.abs(lmax - lmin) > 1e-6)
+                        ):
+                            x0, y0, z0 = float(lmin[0]), float(lmin[1]), float(lmin[2])
+                            x1, y1, z1 = float(lmax[0]), float(lmax[1]), float(lmax[2])
+                            corners_local = np.array([
+                                [x0, y0, z0],
+                                [x0, y0, z1],
+                                [x0, y1, z0],
+                                [x0, y1, z1],
+                                [x1, y0, z0],
+                                [x1, y0, z1],
+                                [x1, y1, z0],
+                                [x1, y1, z1],
+                            ], dtype=np.float32)
+                            corners_local *= scale[:3]
+
+                if corners_local is None:
+                    if extents is None or np.allclose(extents, 0):
+                        key = getattr(entity, "class_name",
+                                      type(entity).__name__).lower().replace("_","")
+                        defaults = {
+                            "car":          (1.0, 0.75, 2.0),
+                            "trafficlight": (0.2, 0.6,  0.2),
+                            "trafficsign":  (0.3, 0.3,  0.1),
+                            "pedestrian":   (0.3, 0.9,  0.3),
+                        }
+                        hx, hy, hz = defaults.get(key, (1.0, 1.0, 1.0))
+                    else:
+                        extents = np.atleast_1d(np.array(extents, dtype=np.float32))
+                        hx, hy, hz = float(extents[0]), float(extents[1]), float(extents[2])
+
+                    hx *= float(scale[0])
+                    hy *= float(scale[1])
+                    hz *= float(scale[2])
+
+                    corners_local = np.array([
+                        [ hx,  hy,  hz],
+                        [ hx,  hy, -hz],
+                        [ hx, -hy,  hz],
+                        [ hx, -hy, -hz],
+                        [-hx,  hy,  hz],
+                        [-hx,  hy, -hz],
+                        [-hx, -hy,  hz],
+                        [-hx, -hy, -hz],
                     ], dtype=np.float32)
-                    corners_local = (Ry @ corners_local.T).T
 
-                corners_world = corners_local + pos  # translate to world space
+                rot = getattr(entity, "rotation_euler",
+                      getattr(entity, "rotation", [0,0,0]))
+                ry_deg = float(np.atleast_1d(rot)[1])
+                ry_rad = np.deg2rad(ry_deg)
+                cr, sr = np.cos(ry_rad), np.sin(ry_rad)
+                Ry = np.array([[ cr, 0, sr],
+                               [  0, 1,  0],
+                               [-sr, 0, cr]], dtype=np.float32)
+                corners_local = (Ry @ corners_local.T).T
 
-                # --- Project each corner through view→projection ---
-                PV = np.array(projection, dtype=np.float32) @ \
-                     np.array(view,       dtype=np.float32)
+                corners_world = corners_local + pos
 
-                screen_xs, screen_ys = [], []
-                for corner in corners_world:
-                    clip = PV @ np.array([*corner, 1.0], dtype=np.float32)
-                    if clip[3] <= 0:
-                        continue                       # behind camera — skip corner
-                    ndc = clip[:3] / clip[3]
-                    sx = (ndc[0] * 0.5 + 0.5) * w
-                    sy = (1.0 - (ndc[1] * 0.5 + 0.5)) * h
-                    screen_xs.append(sx)
-                    screen_ys.append(sy)
+                ext = np.array(active_cam.get_extrinsics(), dtype=np.float32)
+                ones = np.ones((8,1), dtype=np.float32)
+                corners_h = np.hstack([corners_world, ones])
+                corners_cam = (ext @ corners_h.T).T
+                cx = corners_cam[:, 0]
+                cy = corners_cam[:, 1]
+                cz = corners_cam[:, 2]
 
-                if not screen_xs:
-                    return [0, 0, 0, 0]              # all corners behind camera
+                near = 0.1
+                valid = cz < -near
+                if "car" in type(entity).__name__.lower():
+                    alt_valid = cz > near
+                    _dbg("H1", "depth-sign-check", {
+                        "pos": pos,
+                        "cz_min": float(np.min(cz)),
+                        "cz_max": float(np.max(cz)),
+                        "valid_negz": int(np.count_nonzero(valid)),
+                        "valid_posz": int(np.count_nonzero(alt_valid)),
+                    })
+                    _dbg("H2", "transform-inputs", {
+                        "raw_scale": raw_scale,
+                        "scale": scale,
+                        "mesh_extents": extents if extents is not None else "None",
+                        "ry_deg": ry_deg,
+                        "rot_source": rot,
+                    })
+                if not valid.any():
+                    return [0, 0, 0, 0]
 
-                x0 = max(0, int(min(screen_xs)))
-                y0 = max(0, int(min(screen_ys)))
-                x1 = min(w, int(max(screen_xs)))
-                y1 = min(h, int(max(screen_ys)))
+                depth = -cz[valid]
+                K = np.array(active_cam.get_intrinsics(), dtype=np.float32)
+                fx, fy = K[0,0], K[1,1]
+                ppx, ppy = K[0,2], K[1,2]
+
+                px = fx * (cx[valid] / depth) + ppx
+                py_old = fy * (cy[valid] / depth) + ppy
+                py = fy * (-cy[valid] / depth) + ppy
+                if "car" in type(entity).__name__.lower():
+                    _dbg("H4", "y-axis-sign", {
+                        "py_old_minmax": [float(np.min(py_old)), float(np.max(py_old))],
+                        "py_new_minmax": [float(np.min(py)), float(np.max(py))],
+                        "used": "py_new_negated_cy",
+                    })
+
+                px = np.clip(px, 0, w)
+                py = np.clip(py, 0, h)
+
+                x0, y0 = int(np.min(px)), int(np.min(py))
+                x1, y1 = int(np.max(px)), int(np.max(py))
+                if "car" in type(entity).__name__.lower():
+                    _dbg("H3", "bbox-raw", {
+                        "bbox_xyxy": [x0, y0, x1, y1],
+                        "bbox_wh": [x1 - x0, y1 - y0],
+                        "px_minmax": [float(np.min(px)), float(np.max(px))],
+                        "py_minmax": [float(np.min(py)), float(np.max(py))],
+                        "touches_border": bool(x0 == 0 or y0 == 0 or x1 == w or y1 == h),
+                    })
 
                 if x1 - x0 < 4 or y1 - y0 < 4:
-                    return [0, 0, 0, 0]              # degenerate box
+                    return [0, 0, 0, 0]
 
                 return [x0, y0, x1, y1]
 
@@ -573,15 +651,17 @@ class ViewerApp:
             }
             objects = []
             for entity in self.scene.entities:
+                obj_class = getattr(entity, "class_name", type(entity).__name__)
                 objects.append({
                     "instance_id":     getattr(entity, "instance_id", id(entity)),
-                    "class_name":      getattr(entity, "class_name", type(entity).__name__),
+                    "class_name":      obj_class,
                     "position_world":  entity.position.tolist(),
                     "rotation_euler":  getattr(entity, "rotation", [0, 0, 0]),
                     "scale":           getattr(entity, "scale", [1, 1, 1]),
                     "bbox_2d":         entity_bboxes.get(id(entity), [0, 0, 0, 0]),
                     "visible":         getattr(entity, "visible", True),
                     "occlusion_ratio": getattr(entity, "occlusion_ratio", 0.0),
+                    "annotate":        obj_class not in {"Entity", "entity"},
                 })
             render_config = {
                 "resolution": [w, h],

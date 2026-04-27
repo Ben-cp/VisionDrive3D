@@ -123,7 +123,11 @@ class Entity(Node):
     @property
     def mesh_extents(self) -> List[float]:
         """Return [hx, hy, hz] half-extents for bounding box projection."""
-        return (self.local_size / 2.0).tolist()
+        if self.local_size is None:
+            return None
+        s = np.array(self.local_size, dtype=np.float32)
+        # If local_size is full dimensions, return half-extents:
+        return (s / 2.0).tolist()
 
     def place_on_surface(self, x: float, z: float, ground_y: float):
         """

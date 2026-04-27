@@ -41,6 +41,7 @@ class MaskRenderer:
 
     def render(self, scene, projection: np.ndarray, view: np.ndarray):
         # Clear specific to Mask: Sky semantic class = 1 (Bright Green visually)
+        prev_clear = GL.glGetFloatv(GL.GL_COLOR_CLEAR_VALUE)
         GL.glClearColor(0.0, 1.0, 0.0, 1.0)
         GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
         
@@ -50,6 +51,8 @@ class MaskRenderer:
         for ent in scene.entities:
             uma.upload_uniform_vector3fv(ent.instance_color, "instance_color")
             ent.mesh.draw(projection, view, ent.world_matrix(), self.shader)
+            
+        GL.glClearColor(*prev_clear)
 
 
 class DepthRenderer:

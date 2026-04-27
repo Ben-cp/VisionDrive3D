@@ -9,7 +9,6 @@ from src.dataset.metadata_writer import MetadataWriter
 from src.dataset.export_validator import ExportValidator
 import json as _json
 
-# Class name → integer ID mapping (extend as needed)
 _CLASS_MAP = {
     "Car": 0, "car": 0,
     "TrafficLight": 1, "traffic_light": 1,
@@ -18,17 +17,30 @@ _CLASS_MAP = {
     "Entity": 99,
 }
 
+_EXCLUDE_CLASSES = {"Entity", "entity"}
+MIN_BBOX_AREA = 300    # px² — skip annotations smaller than this
+MIN_BBOX_DIM  = 10     # px  — skip if either dimension is tiny
+
 def _write_coco_labels(coco_path, scene_id, image_path,
                        objects, img_w, img_h):
     """Write a minimal COCO-format JSON for one scene."""
     annotations = []
     ann_id = 0
     for obj in objects:
+        if obj.get("class_name") in _EXCLUDE_CLASSES or not obj.get("annotate", True):
+            continue
+        
         bbox = obj.get("bbox_2d", [0,0,0,0])
         x0,y0,x1,y1 = bbox
         bw, bh = x1-x0, y1-y0
         if bw <= 0 or bh <= 0:
             continue
+        
+        if bw * bh < MIN_BBOX_AREA:
+            continue
+        if bw < MIN_BBOX_DIM or bh < MIN_BBOX_DIM:
+            continue
+            
         annotations.append({
             "id": ann_id,
             "image_id": scene_id,
@@ -63,11 +75,20 @@ def _write_yolo_labels(yolo_path, objects, img_w, img_h):
     """Write YOLO-format .txt for one scene (one line per object)."""
     lines = []
     for obj in objects:
+        if obj.get("class_name") in _EXCLUDE_CLASSES or not obj.get("annotate", True):
+            continue
+            
         bbox = obj.get("bbox_2d", [0,0,0,0])
         x0,y0,x1,y1 = bbox
         bw, bh = x1-x0, y1-y0
         if bw <= 0 or bh <= 0:
             continue
+            
+        if bw * bh < MIN_BBOX_AREA:
+            continue
+        if bw < MIN_BBOX_DIM or bh < MIN_BBOX_DIM:
+            continue
+            
         cx = (x0 + bw/2) / img_w
         cy = (y0 + bh/2) / img_h
         nw = bw / img_w

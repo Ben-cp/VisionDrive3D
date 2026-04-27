@@ -1,0 +1,12 @@
+PyOpenGL
+PyOpenGL_accelerate
+opencv-python
+glfw
+numpy
+imgui-bundle
+pandas
+pywavefront
+trimesh
+pillow
+matplotlib
+torch
