@@ -9,6 +9,20 @@ from datetime import datetime
 
 from src.dataset.directory_builder import DatasetDirectoryBuilder
 
+def _to_serializable(obj):
+    """Recursively convert numpy types to JSON-safe Python types."""
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, (np.integer,)):
+        return int(obj)
+    elif isinstance(obj, (np.floating,)):
+        return float(obj)
+    elif isinstance(obj, dict):
+        return {k: _to_serializable(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [_to_serializable(v) for v in obj]
+    return obj
+
 class MetadataWriter:
     """Serializes per-scene metadata to JSON and maintains a global dataset CSV log."""
     
@@ -80,7 +94,7 @@ class MetadataWriter:
         
         # Write JSON
         with open(paths["meta_json"], "w", encoding="utf-8") as f:
-            json.dump(scene_meta, f, indent=4)
+            json.dump(_to_serializable(scene_meta), f, indent=4)
             
         # Append to CSV
         camera_pos = camera_params.get("position", [0.0, 0.0, 0.0])

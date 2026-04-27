@@ -120,6 +120,11 @@ class Entity(Node):
         # Distance from origin to lowest local Y, used to place object on ground.
         self.bottom_y_offset = float(-self.local_aabb_min[1])
 
+    @property
+    def mesh_extents(self) -> List[float]:
+        """Return [hx, hy, hz] half-extents for bounding box projection."""
+        return (self.local_size / 2.0).tolist()
+
     def place_on_surface(self, x: float, z: float, ground_y: float):
         """
         Ensure mesh bottom touches road plane:

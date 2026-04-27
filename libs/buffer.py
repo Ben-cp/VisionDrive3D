@@ -37,10 +37,16 @@ class VAO(object):
 
 
     def __del__(self):
-        GL.glDeleteVertexArrays(1, [self.vao])
-        GL.glDeleteBuffers(1, list(self.vbo.values()))
-        if self.ebo is not None:
-            GL.glDeleteBuffers(1, [self.ebo])
+        try:
+            import sys
+            if sys.meta_path is None:
+                return          # interpreter is shutting down, skip cleanup
+            GL.glDeleteVertexArrays(1, [self.vao])
+            GL.glDeleteBuffers(1, list(self.vbo.values()))
+            if self.ebo is not None:
+                GL.glDeleteBuffers(1, [self.ebo])
+        except Exception:
+            pass               # swallow any remaining errors during shutdown
 
     def activate(self):
         GL.glBindVertexArray(self.vao)  # activated

@@ -7,6 +7,77 @@ from pathlib import Path
 from src.dataset.directory_builder import DatasetDirectoryBuilder
 from src.dataset.metadata_writer import MetadataWriter
 from src.dataset.export_validator import ExportValidator
+import json as _json
+
+# Class name → integer ID mapping (extend as needed)
+_CLASS_MAP = {
+    "Car": 0, "car": 0,
+    "TrafficLight": 1, "traffic_light": 1,
+    "TrafficSign": 2, "traffic_sign": 2,
+    "Pedestrian": 3, "pedestrian": 3,
+    "Entity": 99,
+}
+
+def _write_coco_labels(coco_path, scene_id, image_path,
+                       objects, img_w, img_h):
+    """Write a minimal COCO-format JSON for one scene."""
+    annotations = []
+    ann_id = 0
+    for obj in objects:
+        bbox = obj.get("bbox_2d", [0,0,0,0])
+        x0,y0,x1,y1 = bbox
+        bw, bh = x1-x0, y1-y0
+        if bw <= 0 or bh <= 0:
+            continue
+        annotations.append({
+            "id": ann_id,
+            "image_id": scene_id,
+            "category_id": _CLASS_MAP.get(obj["class_name"], 99),
+            "bbox": [x0, y0, bw, bh],       # COCO: [x,y,w,h]
+            "area": bw * bh,
+            "iscrowd": 0,
+            "segmentation": [],
+        })
+        ann_id += 1
+
+    coco_dict = {
+        "images": [{
+            "id": scene_id,
+            "file_name": str(image_path),
+            "width": img_w,
+            "height": img_h,
+        }],
+        "annotations": annotations,
+        "categories": [
+            {"id": 0,  "name": "car"},
+            {"id": 1,  "name": "traffic_light"},
+            {"id": 2,  "name": "traffic_sign"},
+            {"id": 3,  "name": "pedestrian"},
+            {"id": 99, "name": "entity"},
+        ],
+    }
+    with open(coco_path, "w") as f:
+        _json.dump(coco_dict, f, indent=2)
+
+def _write_yolo_labels(yolo_path, objects, img_w, img_h):
+    """Write YOLO-format .txt for one scene (one line per object)."""
+    lines = []
+    for obj in objects:
+        bbox = obj.get("bbox_2d", [0,0,0,0])
+        x0,y0,x1,y1 = bbox
+        bw, bh = x1-x0, y1-y0
+        if bw <= 0 or bh <= 0:
+            continue
+        cx = (x0 + bw/2) / img_w
+        cy = (y0 + bh/2) / img_h
+        nw = bw / img_w
+        nh = bh / img_h
+        # Clamp to [0,1]
+        cx,cy,nw,nh = (max(0.0,min(1.0,v)) for v in (cx,cy,nw,nh))
+        cls_id = _CLASS_MAP.get(obj["class_name"], 99)
+        lines.append(f"{cls_id} {cx:.6f} {cy:.6f} {nw:.6f} {nh:.6f}")
+    with open(yolo_path, "w") as f:
+        f.write("\n".join(lines))
 
 
 class DatasetManager:
@@ -69,6 +140,14 @@ class DatasetManager:
         # Register in CSV and JSON
         self.writer.write_scene(scene_id, camera_params, objects, render_config, depth_map)
         
+        paths = self.begin_export(scene_id)
+        img_w, img_h = render_config.get("resolution", [1280, 720])
+        _write_coco_labels(
+            paths["coco_json"], scene_id,
+            paths["image"], objects, img_w, img_h
+        )
+        _write_yolo_labels(paths["yolo_txt"], objects, img_w, img_h)
+
         if scene_id not in self.session_scenes:
             self.session_scenes.append(scene_id)
         

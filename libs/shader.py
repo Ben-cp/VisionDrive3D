@@ -42,7 +42,7 @@ class Shader:
         if isinstance(src, str) and src.startswith("\ufeff"):
             src = src.lstrip("\ufeff")
         shader = GL.glCreateShader(shader_type)
-        print(repr(src[:80]))
+        # print(repr(src[:80]))
         GL.glShaderSource(shader, [src])
         GL.glCompileShader(shader)
         status = GL.glGetShaderiv(shader, GL.GL_COMPILE_STATUS)
