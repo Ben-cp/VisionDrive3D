@@ -5,3 +5,6 @@ assets/architecture.drawio
 .cursor/
 .codex
 output_dataset/
+weights/
+.ultralytics/
+runs/

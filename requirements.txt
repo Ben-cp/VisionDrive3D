@@ -9,4 +9,5 @@ pywavefront
 trimesh
 pillow
 matplotlib
-torch
+# torch
+ultralytics
