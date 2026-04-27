@@ -185,6 +185,8 @@ function renderQualitative(meta) {
       { label: `${stem} • RGB Input`, file: `assets/images/qualitative/input_${stem}.png` },
       { label: `${stem} • Baseline Det`, file: `assets/images/qualitative/detection_baseline_${stem}.png` },
       { label: `${stem} • Fine-tuned Det`, file: `assets/images/qualitative/detection_finetuned_${stem}.png` },
+      { label: `${stem} • Baseline Seg`, file: `assets/images/qualitative/seg_baseline_${stem}.png` },
+      { label: `${stem} • Fine-tuned Seg`, file: `assets/images/qualitative/seg_finetuned_${stem}.png` },
     ];
 
     cards.forEach((card) => {

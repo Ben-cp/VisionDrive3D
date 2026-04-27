@@ -154,6 +154,45 @@
             loading="lazy"
           />
         </figure>
+
+        <h3>Latest Inference Visuals (Contour Labels)</h3>
+        <p class="notice">
+          Updated qualitative outputs from YOLOv8n-seg retraining with contour-extracted polygons.
+        </p>
+        <div class="latest-grid">
+          <figure class="panel">
+            <img
+              src="assets/images/latest/comparison_grid.png"
+              alt="Input, detection and segmentation side-by-side comparison"
+              loading="lazy"
+            />
+            <figcaption>Top scenes: RGB input vs detection vs segmentation predictions.</figcaption>
+          </figure>
+          <figure class="panel">
+            <img
+              src="assets/images/latest/segmentation_inference_demo.png"
+              alt="Segmentation inference grid"
+              loading="lazy"
+            />
+            <figcaption>Segmentation predictions on held-out test images.</figcaption>
+          </figure>
+          <figure class="panel">
+            <img
+              src="assets/images/latest/detection_inference_demo.png"
+              alt="Detection inference grid"
+              loading="lazy"
+            />
+            <figcaption>Detection predictions on held-out test images.</figcaption>
+          </figure>
+          <figure class="panel">
+            <img
+              src="assets/images/latest/yoloseg_training_curves.png"
+              alt="YOLO segmentation training curves"
+              loading="lazy"
+            />
+            <figcaption>YOLO-seg training curves from the latest contour-label run.</figcaption>
+          </figure>
+        </div>
       </section>
 
       <hr />

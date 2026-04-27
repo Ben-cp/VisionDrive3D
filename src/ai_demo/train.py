@@ -12,6 +12,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List
 
+import cv2
+import numpy as np
+
 SEED = 42
 SCENE_IMAGE_RE = re.compile(r"scene_(\d+)\.png$")
 
@@ -174,38 +177,137 @@ def _bbox_line_to_polygon(tokens: list[str]) -> str:
     )
 
 
+def _parse_yolo_boxes(label_path: Path, img_w: int, img_h: int) -> list[tuple[int, int, int, int]]:
+    boxes: list[tuple[int, int, int, int]] = []
+    if not label_path.exists():
+        return boxes
+
+    for raw_line in label_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        tokens = line.split()
+        if len(tokens) < 5:
+            continue
+
+        cls_id = int(float(tokens[0]))
+        if cls_id != 0:
+            continue
+
+        cx, cy, bw, bh = (float(v) for v in tokens[1:5])
+        x1 = int(round((cx - bw / 2.0) * img_w))
+        y1 = int(round((cy - bh / 2.0) * img_h))
+        x2 = int(round((cx + bw / 2.0) * img_w))
+        y2 = int(round((cy + bh / 2.0) * img_h))
+
+        x1 = max(0, min(img_w - 1, x1))
+        y1 = max(0, min(img_h - 1, y1))
+        x2 = max(0, min(img_w, x2))
+        y2 = max(0, min(img_h, y2))
+
+        if x2 > x1 and y2 > y1:
+            boxes.append((x1, y1, x2, y2))
+
+    return boxes
+
+
+def _contour_inside_box_ratio(
+    contour: np.ndarray,
+    boxes: list[tuple[int, int, int, int]],
+    shape_hw: tuple[int, int],
+) -> float:
+    if not boxes:
+        return 0.0
+
+    contour_area = float(cv2.contourArea(contour))
+    if contour_area <= 0:
+        return 0.0
+
+    mask = np.zeros(shape_hw, dtype=np.uint8)
+    cv2.drawContours(mask, [contour], contourIdx=-1, color=1, thickness=-1)
+
+    best_ratio = 0.0
+    for x1, y1, x2, y2 in boxes:
+        inside = float(mask[y1:y2, x1:x2].sum())
+        ratio = inside / contour_area
+        if ratio > best_ratio:
+            best_ratio = ratio
+    return best_ratio
+
+
 def build_segmentation_labels(dataset_root: Path) -> Path:
     labels_root = dataset_root / "labels"
+    yolo_root = labels_root / "yolo"
+    masks_root = dataset_root / "masks"
     seg_root = dataset_root / "labels_seg"
     split_names = ("train", "val", "test")
+    epsilon_factor = 0.002
+    min_area_px = 100
+    min_inside_ratio_when_no_black_bg = 0.35
 
     for split_name in split_names:
-        src_dir = labels_root / split_name
+        src_dir = yolo_root / split_name
         dst_dir = seg_root / split_name
         dst_dir.mkdir(parents=True, exist_ok=True)
 
         expected_names: set[str] = set()
         for src_path in sorted(src_dir.glob("scene_*.txt")):
             expected_names.add(src_path.name)
-            converted_lines: list[str] = []
+            mask_path = masks_root / f"{src_path.stem}.png"
+            if not mask_path.exists() and src_path.is_symlink():
+                mask_path = masks_root / f"{src_path.resolve().stem}.png"
+            if not mask_path.exists():
+                raise FileNotFoundError(f"Missing mask for split label {src_path}: {mask_path}")
 
-            for raw_line in src_path.read_text(encoding="utf-8").splitlines():
-                line = raw_line.strip()
-                if not line:
+            mask = cv2.imread(str(mask_path), cv2.IMREAD_COLOR)
+            if mask is None:
+                raise RuntimeError(f"Failed to read mask image: {mask_path}")
+
+            img_h, img_w = mask.shape[:2]
+            yolo_boxes = _parse_yolo_boxes(src_path, img_w=img_w, img_h=img_h)
+            has_black_background = bool(np.any(np.all(mask == 0, axis=2)))
+            unique_colors = np.unique(mask.reshape(-1, 3), axis=0)
+
+            polygon_lines: list[str] = []
+            for color in unique_colors:
+                # Skip canonical black background when present.
+                if color.tolist() == [0, 0, 0]:
                     continue
 
-                tokens = line.split()
-                if len(tokens) == 5:
-                    converted_lines.append(_bbox_line_to_polygon(tokens))
-                elif len(tokens) >= 9:
-                    # Already polygon-like, keep as-is.
-                    converted_lines.append(" ".join(tokens))
-                else:
-                    raise ValueError(
-                        f"Unsupported label format in {src_path}: '{line}'"
-                    )
+                instance_mask = cv2.inRange(mask, color, color)
+                contours, _ = cv2.findContours(
+                    instance_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                )
 
-            content = ("\n".join(converted_lines) + "\n") if converted_lines else ""
+                for contour in contours:
+                    area = float(cv2.contourArea(contour))
+                    if area < min_area_px:
+                        continue
+
+                    # If the mask has no black background, keep only contours that
+                    # significantly overlap a known car detection box.
+                    if not has_black_background and yolo_boxes:
+                        inside_ratio = _contour_inside_box_ratio(
+                            contour=contour,
+                            boxes=yolo_boxes,
+                            shape_hw=(img_h, img_w),
+                        )
+                        if inside_ratio < min_inside_ratio_when_no_black_bg:
+                            continue
+
+                    epsilon = epsilon_factor * cv2.arcLength(contour, True)
+                    approx = cv2.approxPolyDP(contour, epsilon, True)
+                    if len(approx) < 3:
+                        continue
+
+                    coords = approx.reshape(-1, 2).astype(np.float32)
+                    coords[:, 0] /= float(img_w)
+                    coords[:, 1] /= float(img_h)
+                    coords = np.clip(coords, 0.0, 1.0)
+                    coord_str = " ".join(f"{x:.6f} {y:.6f}" for x, y in coords)
+                    polygon_lines.append(f"0 {coord_str}")
+
+            content = ("\n".join(polygon_lines) + "\n") if polygon_lines else ""
             _write_text_if_changed(dst_dir / src_path.name, content)
 
         for stale_path in dst_dir.glob("scene_*.txt"):

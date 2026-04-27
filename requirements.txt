@@ -10,4 +10,4 @@ trimesh
 pillow
 matplotlib
 # torch
-ultralytics
+# ultralytics
