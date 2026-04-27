@@ -23,6 +23,12 @@ function renderDatasetStats(meta) {
   body.appendChild(tr);
 }
 
+function getRank(value, allValues, isMinBetter = false) {
+  const sorted = [...new Set(allValues)].sort((a, b) => isMinBetter ? a - b : b - a);
+  const index = sorted.findIndex((v) => Math.abs(v - value) < 1e-9);
+  return index === -1 ? null : index + 1;
+}
+
 function renderResultsTable(data) {
   const body = document.getElementById("results-body");
   body.innerHTML = "";
@@ -50,9 +56,9 @@ function renderResultsTable(data) {
     },
   ];
 
-  const bestMap50 = Math.max(...rows.map((r) => Number(r.mAP50 || 0)));
-  const bestMap95 = Math.max(...rows.map((r) => Number(r.mAP50_95 || 0)));
-  const bestSpeed = Math.min(...rows.map((r) => Number(r.inference_ms || Number.POSITIVE_INFINITY)));
+  const allMap50 = rows.map((r) => Number(r.mAP50 || 0));
+  const allMap95 = rows.map((r) => Number(r.mAP50_95 || 0));
+  const allSpeed = rows.map((r) => Number(r.inference_ms || 0));
 
   rows.forEach((row) => {
     const tr = document.createElement("tr");
@@ -60,12 +66,23 @@ function renderResultsTable(data) {
     const map95 = Number(row.mAP50_95 || 0);
     const speed = Number(row.inference_ms || 0);
 
+    const rank50 = getRank(map50, allMap50, false);
+    const rank95 = getRank(map95, allMap95, false);
+    const rankSpeed = getRank(speed, allSpeed, true);
+
+    const getClass = (rank) => {
+      if (rank === 1) return "best";
+      if (rank === 2) return "second-best";
+      if (rank === 3) return "third-best";
+      return "";
+    };
+
     tr.innerHTML = `
       <td>${row.model}</td>
       <td>${row.type}</td>
-      <td class="${Math.abs(map50 - bestMap50) < 1e-9 ? "best" : ""}">${fmt(map50, 3)}</td>
-      <td class="${Math.abs(map95 - bestMap95) < 1e-9 ? "best" : ""}">${fmt(map95, 3)}</td>
-      <td class="${Math.abs(speed - bestSpeed) < 1e-9 ? "best" : ""}">${fmt(speed, 1)}</td>
+      <td class="${getClass(rank50)}">${fmt(map50, 3)}</td>
+      <td class="${getClass(rank95)}">${fmt(map95, 3)}</td>
+      <td class="${getClass(rankSpeed)}">${fmt(speed, 1)}</td>
     `;
     body.appendChild(tr);
   });
@@ -104,16 +121,44 @@ function renderBackboneTable(rows) {
     return;
   }
 
+  const allMap50 = rows.map((r) => Number(r.mAP50 || 0));
+  const allMap95 = rows.map((r) => Number(r.mAP50_95 || 0));
+  const allPrecision = rows.map((r) => Number(r.precision || 0));
+  const allRecall = rows.map((r) => Number(r.recall || 0));
+  const allSpeed = rows.map((r) => Number(r.inference_ms || 0));
+  const allParams = rows.map((r) => Number(r.params_M || 0));
+
+  const getClass = (rank) => {
+    if (rank === 1) return "best";
+    if (rank === 2) return "second-best";
+    if (rank === 3) return "third-best";
+    return "";
+  };
+
   rows.forEach((row) => {
     const tr = document.createElement("tr");
+    const map50 = Number(row.mAP50 || 0);
+    const map95 = Number(row.mAP50_95 || 0);
+    const precision = Number(row.precision || 0);
+    const recall = Number(row.recall || 0);
+    const speed = Number(row.inference_ms || 0);
+    const params = Number(row.params_M || 0);
+
+    const rank50 = getRank(map50, allMap50, false);
+    const rank95 = getRank(map95, allMap95, false);
+    const rankPrecision = getRank(precision, allPrecision, false);
+    const rankRecall = getRank(recall, allRecall, false);
+    const rankSpeed = getRank(speed, allSpeed, true);
+    const rankParams = getRank(params, allParams, true);
+
     tr.innerHTML = `
       <td>${row.model}</td>
-      <td>${fmt(row.mAP50, 3)}</td>
-      <td>${fmt(row.mAP50_95, 3)}</td>
-      <td>${fmt(row.precision, 3)}</td>
-      <td>${fmt(row.recall, 3)}</td>
-      <td>${fmt(row.inference_ms, 1)}</td>
-      <td>${fmt(row.params_M, 2)}</td>
+      <td class="${getClass(rank50)}">${fmt(map50, 3)}</td>
+      <td class="${getClass(rank95)}">${fmt(map95, 3)}</td>
+      <td class="${getClass(rankPrecision)}">${fmt(precision, 3)}</td>
+      <td class="${getClass(rankRecall)}">${fmt(recall, 3)}</td>
+      <td class="${getClass(rankSpeed)}">${fmt(speed, 1)}</td>
+      <td class="${getClass(rankParams)}">${fmt(params, 2)}</td>
     `;
     body.appendChild(tr);
   });

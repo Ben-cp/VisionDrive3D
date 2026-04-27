@@ -8,3 +8,4 @@ output_dataset/
 weights/
 .ultralytics/
 runs/
+*.pt

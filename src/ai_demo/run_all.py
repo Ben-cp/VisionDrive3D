@@ -4,11 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import math
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Iterable
+
+import cv2
 
 
 def project_root() -> Path:
@@ -34,6 +37,61 @@ def safe_copy(src: Path, dst: Path) -> bool:
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dst)
     return True
+
+
+def build_lightweight_dataset_grid(
+    dataset_root: Path,
+    dst_path: Path,
+    *,
+    max_scenes: int = 12,
+    cols: int = 4,
+    tile_width: int = 360,
+) -> bool:
+    """Build a compact grid image for the project page to avoid oversized PNG files."""
+    image_paths = sorted((dataset_root / "images").glob("scene_*.png"))
+    if not image_paths:
+        return False
+
+    if len(image_paths) > max_scenes:
+        step = max(1, len(image_paths) // max_scenes)
+        image_paths = [image_paths[i] for i in range(0, len(image_paths), step)][:max_scenes]
+
+    tiles = []
+    tile_height = None
+    for img_path in image_paths:
+        img = cv2.imread(str(img_path))
+        if img is None:
+            continue
+
+        h, w = img.shape[:2]
+        if h <= 0 or w <= 0:
+            continue
+
+        target_h = max(1, int(round((tile_width * h) / w)))
+        tile = cv2.resize(img, (tile_width, target_h), interpolation=cv2.INTER_AREA)
+        tile = cv2.copyMakeBorder(tile, 4, 4, 4, 4, cv2.BORDER_CONSTANT, value=(245, 245, 245))
+
+        if tile_height is None:
+            tile_height = tile.shape[0]
+        elif tile.shape[0] != tile_height:
+            tile = cv2.resize(tile, (tile.shape[1], tile_height), interpolation=cv2.INTER_AREA)
+
+        tiles.append(tile)
+
+    if not tiles:
+        return False
+
+    rows = math.ceil(len(tiles) / cols)
+    blank = tiles[0].copy()
+    blank[:] = 245
+    while len(tiles) < rows * cols:
+        tiles.append(blank.copy())
+
+    row_images = [cv2.hconcat(tiles[r * cols : (r + 1) * cols]) for r in range(rows)]
+    grid = cv2.vconcat(row_images)
+
+    dst_path.parent.mkdir(parents=True, exist_ok=True)
+    return bool(cv2.imwrite(str(dst_path), grid, [cv2.IMWRITE_PNG_COMPRESSION, 9]))
 
 
 def ensure_dataset_grid(dataset_root: Path, root: Path) -> Path | None:
@@ -94,11 +152,23 @@ def sync_project_page_assets(dataset_root: Path, root: Path) -> None:
     if not safe_copy(backbone_plot_src, assets_plots / "backbone_comparison.png"):
         print(f"[WARN] Missing backbone comparison plot at {backbone_plot_src}")
 
+    grid_dst = assets_images / "dataset_grid.png"
     grid_src = ensure_dataset_grid(dataset_root, root)
-    if grid_src is not None:
-        safe_copy(grid_src, assets_images / "dataset_grid.png")
+    max_grid_size_bytes = 12 * 1024 * 1024
+
+    if grid_src is not None and grid_src.exists() and grid_src.stat().st_size <= max_grid_size_bytes:
+        safe_copy(grid_src, grid_dst)
     else:
-        print("[WARN] Dataset grid image not found or generated.")
+        built = build_lightweight_dataset_grid(dataset_root, grid_dst)
+        if not built:
+            if grid_src is not None:
+                safe_copy(grid_src, grid_dst)
+            print("[WARN] Dataset grid image not found or generated.")
+        elif grid_src is not None and grid_src.exists():
+            print(
+                f"[INFO] Replaced large grid ({grid_src.stat().st_size / (1024 * 1024):.1f} MB) "
+                f"with compact grid at {grid_dst}."
+            )
 
     qualitative_src = dataset_root / "ai_results" / "qualitative"
     if qualitative_src.exists():
