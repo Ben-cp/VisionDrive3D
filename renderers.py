@@ -41,6 +41,7 @@ class MaskRenderer:
 
     def render(self, scene, projection: np.ndarray, view: np.ndarray):
         # Clear specific to Mask: Sky semantic class = 1 (Bright Green visually)
+        prev_clear = GL.glGetFloatv(GL.GL_COLOR_CLEAR_VALUE)
         GL.glClearColor(0.0, 1.0, 0.0, 1.0)
         GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
         
@@ -50,6 +51,8 @@ class MaskRenderer:
         for ent in scene.entities:
             uma.upload_uniform_vector3fv(ent.instance_color, "instance_color")
             ent.mesh.draw(projection, view, ent.world_matrix(), self.shader)
+            
+        GL.glClearColor(*prev_clear)
 
 
 class DepthRenderer:
@@ -199,6 +202,14 @@ class RenderManager:
             frame_idx=self.frame_idx,
             camera_data=camera_data
         )
+
+        # Store paths for active camera hook access
+        active_cam_name = camera_manager.get_active_camera().name
+        stem = f"{self.frame_idx:06d}"
+        pfx = f"{active_cam_name}_{stem}"
+        self.last_exported_rgb_path = os.path.join(self.exporter.rgb_dir, f"{pfx}.png")
+        self.last_exported_mask_path = os.path.join(self.exporter.mask_dir, f"{pfx}.png")
+        self.last_exported_depth_path = os.path.join(self.exporter.depth_dir, f"{pfx}.png")
 
         self.frame_idx += 1
         self.mode = old_mode

@@ -2,3 +2,10 @@ __pycache__/
 verify_projection.py
 outputs/
 assets/architecture.drawio
+.cursor/
+.codex
+output_dataset/
+weights/
+.ultralytics/
+runs/
+*.pt

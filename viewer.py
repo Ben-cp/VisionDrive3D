@@ -13,6 +13,7 @@ from renderers import RenderManager
 from car import Car
 from scene_overlay import SceneOverlay
 from traffic import TrafficManager
+from src.dataset.dataset_manager import DatasetManager
 
 
 def instance_color_from_id(idx: int) -> tuple[float, float, float]:
@@ -30,27 +31,32 @@ def instance_color_from_id(idx: int) -> tuple[float, float, float]:
 
 
 class ViewerApp:
-    def __init__(self, width: int = 1280, height: int = 720):
+    def __init__(self, width: int = 1280, height: int = 720, headless: bool = False):
         if not glfw.init():
             raise RuntimeError("Failed to initialize GLFW")
 
-        glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 3)
-        glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 3)
-        glfw.window_hint(glfw.OPENGL_FORWARD_COMPAT, GL.GL_TRUE)
-        glfw.window_hint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
-        glfw.window_hint(glfw.DEPTH_BITS, 24)
-        glfw.window_hint(glfw.DOUBLEBUFFER, True)
+        self.headless = headless
 
-        self.window = glfw.create_window(width, height, "VisionDrive3D - Synthetic Generator", None, None)
-        if not self.window:
-            glfw.terminate()
-            raise RuntimeError("Failed to create GLFW window")
+        if headless:
+            self._init_offscreen(width, height)
+        else:
+            glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 3)
+            glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 3)
+            glfw.window_hint(glfw.OPENGL_FORWARD_COMPAT, GL.GL_TRUE)
+            glfw.window_hint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
+            glfw.window_hint(glfw.DEPTH_BITS, 24)
+            glfw.window_hint(glfw.DOUBLEBUFFER, True)
 
-        glfw.make_context_current(self.window)
-        glfw.swap_interval(1)
+            self.window = glfw.create_window(width, height, "VisionDrive3D - Synthetic Generator", None, None)
+            if not self.window:
+                glfw.terminate()
+                raise RuntimeError("Failed to create GLFW window")
 
-        # Lock cursor for FPS fly camera
-        glfw.set_input_mode(self.window, glfw.CURSOR, glfw.CURSOR_DISABLED)
+            glfw.make_context_current(self.window)
+            glfw.swap_interval(1)
+
+            # Lock cursor for FPS fly camera
+            glfw.set_input_mode(self.window, glfw.CURSOR, glfw.CURSOR_DISABLED)
 
         GL.glEnable(GL.GL_DEPTH_TEST)
         GL.glDepthFunc(GL.GL_LESS)
@@ -89,10 +95,16 @@ class ViewerApp:
         # Traffic manager (wired after scene assets load)
         self.traffic_manager = TrafficManager()
 
-        glfw.set_key_callback(self.window, self._on_key)
-        glfw.set_cursor_pos_callback(self.window, self._on_mouse_move)
+        if not self.headless:
+            glfw.set_key_callback(self.window, self._on_key)
+            glfw.set_cursor_pos_callback(self.window, self._on_mouse_move)
 
         self._load_scene_assets(base_dir)
+
+        self.scene_id = 0
+        self.dataset_manager = DatasetManager(
+            root="./output_dataset", validate=True
+        )
 
     # ------------------------------------------------------------------
     # Camera ↔ traffic car attachment
@@ -234,6 +246,66 @@ class ViewerApp:
             # We don't render to screen, just export the camera bounds
             self.render_manager.export_current_frame(self.camera_manager)
             print(f"Generated frame {self.render_manager.frame_idx - 1:06d}")
+
+            # --- Dataset export hook ---
+            frame_idx = self.render_manager.frame_idx - 1
+            paths = self.dataset_manager.begin_export(self.scene_id)
+
+            active_cam = self.camera_manager.get_active_camera()
+            camera_params = {
+                "position": active_cam.position.tolist(),
+                "target":   active_cam.target.tolist() if hasattr(active_cam, 'target') else (active_cam.position + active_cam.front).tolist(),
+                "up":       active_cam.up.tolist() if hasattr(active_cam, 'up') else [0,1,0],
+                "fov_deg":  active_cam.fov if hasattr(active_cam, 'fov') else 45.0,
+                "near":     active_cam.near,
+                "far":      active_cam.far,
+                "intrinsic_matrix":  active_cam.get_intrinsics().tolist(),
+                "extrinsic_matrix":  active_cam.get_extrinsics().tolist(),
+            }
+
+            objects = []
+            for entity in self.scene.entities:
+                obj_class = getattr(entity, "class_name", type(entity).__name__)
+                objects.append({
+                    "instance_id":    getattr(entity, "instance_id", id(entity)),
+                    "class_name":     obj_class,
+                    "position_world": entity.position.tolist(),
+                    "rotation_euler": getattr(entity, "rotation", [0,0,0]),
+                    "scale":          getattr(entity, "scale", [1,1,1]),
+                    "bbox_2d":        getattr(entity, "bbox_2d", [0,0,0,0]),
+                    "visible":        getattr(entity, "visible", True),
+                    "occlusion_ratio":getattr(entity, "occlusion_ratio", 0.0),
+                    "annotate":       obj_class not in {"Entity", "entity"},
+                })
+
+            render_config = {
+                "resolution": list(active_cam.resolution),
+                "lighting":   "directional",
+                "num_lights": len(getattr(self.scene, "lights", [])),
+                "background": "road_scene",
+            }
+
+            # Read back files already written by export_current_frame
+            import cv2, numpy as np
+            from pathlib import Path
+
+            existing_rgb   = cv2.imread(str(self.render_manager.last_exported_rgb_path))
+            existing_depth = np.load(str(self.render_manager.last_exported_depth_path)) \
+                             if Path(self.render_manager.last_exported_depth_path).suffix == ".npy" \
+                             else cv2.imread(str(self.render_manager.last_exported_depth_path), cv2.IMREAD_GRAYSCALE)
+            existing_mask  = cv2.imread(str(self.render_manager.last_exported_mask_path), cv2.IMREAD_GRAYSCALE)
+
+            self.dataset_manager.finish_scene(
+                scene_id=self.scene_id,
+                camera_params=camera_params,
+                objects=objects,
+                render_config=render_config,
+                rgb_image=existing_rgb,
+                depth_map=existing_depth,
+                seg_mask=existing_mask,
+            )
+            self.scene_id += 1
+            # --- End dataset export hook ---
         print("--- Automated generation complete ---")
 
     def _on_mouse_move(self, _win, xpos, ypos):
@@ -248,6 +320,381 @@ class ViewerApp:
         # Mouse look for fly navigation
         active_cam = self.camera_manager.get_active_camera()
         active_cam.process_mouse_delta(dx, dy)
+
+    def _init_offscreen(self, width: int, height: int):
+        """
+        Initialize an OpenGL offscreen context using GLFW with a hidden window.
+        Falls back to OSMesa if GLFW headless hint is unavailable.
+        """
+        # Tell GLFW not to show the window at all
+        glfw.window_hint(glfw.VISIBLE, glfw.FALSE)
+        glfw.window_hint(glfw.CONTEXT_VERSION_MAJOR, 3)
+        glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 3)
+        glfw.window_hint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
+
+        self.window = glfw.create_window(width, height, "offscreen", None, None)
+        if not self.window:
+            raise RuntimeError(
+                "GLFW offscreen context creation failed. "
+                "On Linux servers, try: export DISPLAY=:99 or install osmesa."
+            )
+        glfw.make_context_current(self.window)
+
+        # Create FBO + texture + depth renderbuffer
+        self._fbo = GL.glGenFramebuffers(1)
+        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self._fbo)
+
+        self._color_tex = GL.glGenTextures(1)
+        GL.glBindTexture(GL.GL_TEXTURE_2D, self._color_tex)
+        GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_RGB,
+                        width, height, 0,
+                        GL.GL_RGB, GL.GL_UNSIGNED_BYTE, None)
+        GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MIN_FILTER, GL.GL_LINEAR)
+        GL.glFramebufferTexture2D(GL.GL_FRAMEBUFFER,
+                                  GL.GL_COLOR_ATTACHMENT0,
+                                  GL.GL_TEXTURE_2D, self._color_tex, 0)
+
+        self._depth_rbo = GL.glGenRenderbuffers(1)
+        GL.glBindRenderbuffer(GL.GL_RENDERBUFFER, self._depth_rbo)
+        GL.glRenderbufferStorage(GL.GL_RENDERBUFFER, GL.GL_DEPTH24_STENCIL8,
+                                 width, height)
+        GL.glFramebufferRenderbuffer(GL.GL_FRAMEBUFFER,
+                                     GL.GL_DEPTH_STENCIL_ATTACHMENT,
+                                     GL.GL_RENDERBUFFER, self._depth_rbo)
+
+        status = GL.glCheckFramebufferStatus(GL.GL_FRAMEBUFFER)
+        if status != GL.GL_FRAMEBUFFER_COMPLETE:
+            raise RuntimeError(f"FBO incomplete, status: {hex(status)}")
+
+        self._offscreen_width  = width
+        self._offscreen_height = height
+
+    def _destroy_offscreen(self):
+        GL.glDeleteFramebuffers(1, [self._fbo])
+        GL.glDeleteTextures(1, [self._color_tex])
+        GL.glDeleteRenderbuffers(1, [self._depth_rbo])
+        glfw.destroy_window(self.window)
+        glfw.terminate()
+
+    def run_headless(self, num_frames: int, output: str):
+        """
+        Run dataset generation fully offscreen. No window is shown.
+        Renders num_frames scenes and exports them via DatasetManager.
+        """
+        w = self._offscreen_width
+        h = self._offscreen_height
+
+        self.dataset_manager = DatasetManager(root=output, validate=True)
+
+        for i in range(num_frames):
+            GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self._fbo)
+            GL.glClearColor(0.18, 0.20, 0.24, 1.0)
+            GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
+
+            # Randomize scene for variety (reuse existing scene logic)
+            self.scene.spawn_cars_on_lanes(
+                lanes_config=self._default_lanes_config(),
+                num_cars=len(self.scene.get_dynamic_entities()),
+                scale_range=(0.9, 1.15),
+                sat_padding=0.20,
+                max_retry_per_car=120,
+            )
+            self._ensure_camera_host()
+            self.traffic_manager.update(0.016)
+            self.scene.update(0.016)
+
+            active_cam = self.camera_manager.get_active_camera()
+            # To get ground alignment properly if needed
+            active_cam.update_ground_alignment(self.scene, 0.016)
+            
+            projection = active_cam.get_projection_matrix(w / h) if hasattr(active_cam, 'get_projection_matrix') else active_cam.projection_matrix()
+            view       = active_cam.get_view_matrix() if hasattr(active_cam, 'get_view_matrix') else active_cam.view_matrix()
+
+            # 1. Main render
+            self.render_manager.draw(projection, view)
+            GL.glFlush()
+
+            # 2. Read RGB IMMEDIATELY — before any mask pass touches the buffer
+            raw = GL.glReadPixels(0, 0, w, h, GL.GL_RGB, GL.GL_UNSIGNED_BYTE)
+            import numpy as np
+            rgb = np.frombuffer(raw, dtype=np.uint8).reshape(h, w, 3)
+            rgb = np.flipud(rgb)
+
+            # 3. Read depth buffer (also before mask pass)
+            raw_d = GL.glReadPixels(0, 0, w, h,
+                                    GL.GL_DEPTH_COMPONENT, GL.GL_FLOAT)
+            depth = np.frombuffer(raw_d, dtype=np.float32).reshape(h, w)
+            depth = np.flipud(depth)
+            near, far = active_cam.near, active_cam.far
+            depth = (2.0 * near * far) / (
+                far + near - (depth * 2.0 - 1.0) * (far - near)
+            )
+
+            # 4. NOW trigger mask pass (it can overwrite the color buffer freely)
+            self.render_manager._reset_texture_state(self.render_manager.mask_renderer.shader)
+            self.render_manager.mask_renderer.render(self.scene, projection, view)
+            if self.render_manager.scene_overlay:
+                self.render_manager.scene_overlay.render(self.render_manager.mask_renderer.shader, projection, view, is_rgb=False)
+            self.render_manager._reset_texture_state(self.render_manager.mask_renderer.shader)
+            GL.glFinish()
+            GL.glClearColor(0.18, 0.20, 0.24, 1.0)
+            GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self._fbo)
+
+            if hasattr(self.render_manager, 'exporter') and hasattr(self.render_manager.exporter, 'read_rgb_buffer'):
+                seg_mask = self.render_manager.exporter.read_rgb_buffer(w, h)
+            elif hasattr(self.render_manager, 'get_segmentation_mask'):
+                seg_mask = self.render_manager.get_segmentation_mask(w, h)
+            else:
+                depth_norm = (depth - depth.min()) / (depth.max() - depth.min() + 1e-8)
+                seg_mask = (depth_norm * 255).astype(np.uint8)
+
+            def project_entity_bbox(entity, projection, view, w, h):
+                import numpy as np
+                import json
+                import time
+
+                def _to_native(v):
+                    if isinstance(v, np.generic):
+                        return v.item()
+                    if isinstance(v, np.ndarray):
+                        return v.tolist()
+                    if isinstance(v, (list, tuple)):
+                        return [_to_native(x) for x in v]
+                    if isinstance(v, dict):
+                        return {str(k): _to_native(val) for k, val in v.items()}
+                    return v
+
+                def _dbg(hypothesis_id, message, data):
+                    # region agent log
+                    try:
+                        payload = {
+                            "sessionId": "7b13d0",
+                            "runId": "pre-fix",
+                            "hypothesisId": hypothesis_id,
+                            "location": "viewer.py:project_entity_bbox",
+                            "message": message,
+                            "data": _to_native(data),
+                            "timestamp": int(time.time() * 1000),
+                        }
+                        with open("/home/ml4u/BKTeam/ChiDai/VisionDrive3D/.cursor/debug-7b13d0.log", "a", encoding="utf-8") as f:
+                            f.write(json.dumps(payload) + "\n")
+                    except Exception as e:
+                        print(f"DEBUG_LOG_WRITE_ERROR: {e}")
+                    # endregion
+                _dbg("H0", "entry", {"entity_type": type(entity).__name__})
+
+                pos = np.array(
+                    getattr(entity, "position",
+                    getattr(entity, "position_world", [0,0,0]))[:3],
+                    dtype=np.float32)
+
+                raw_scale = getattr(entity, "scale", [1,1,1])
+                if np.isscalar(raw_scale):
+                    scale = np.array([raw_scale]*3, dtype=np.float32)
+                else:
+                    scale = np.atleast_1d(np.array(raw_scale, dtype=np.float32))
+                    if scale.shape[0] == 1:
+                        scale = np.array([scale[0]]*3, dtype=np.float32)
+
+                extents = getattr(entity, "mesh_extents", None)
+                corners_local = None
+
+                local_aabb_min = getattr(entity, "local_aabb_min", None)
+                local_aabb_max = getattr(entity, "local_aabb_max", None)
+                if local_aabb_min is not None and local_aabb_max is not None:
+                    local_aabb_min = np.atleast_1d(np.array(local_aabb_min, dtype=np.float32))
+                    local_aabb_max = np.atleast_1d(np.array(local_aabb_max, dtype=np.float32))
+                    if local_aabb_min.shape[0] >= 3 and local_aabb_max.shape[0] >= 3:
+                        lmin = local_aabb_min[:3]
+                        lmax = local_aabb_max[:3]
+                        if (
+                            np.all(np.isfinite(lmin))
+                            and np.all(np.isfinite(lmax))
+                            and np.any(np.abs(lmax - lmin) > 1e-6)
+                        ):
+                            x0, y0, z0 = float(lmin[0]), float(lmin[1]), float(lmin[2])
+                            x1, y1, z1 = float(lmax[0]), float(lmax[1]), float(lmax[2])
+                            corners_local = np.array([
+                                [x0, y0, z0],
+                                [x0, y0, z1],
+                                [x0, y1, z0],
+                                [x0, y1, z1],
+                                [x1, y0, z0],
+                                [x1, y0, z1],
+                                [x1, y1, z0],
+                                [x1, y1, z1],
+                            ], dtype=np.float32)
+                            corners_local *= scale[:3]
+
+                if corners_local is None:
+                    if extents is None or np.allclose(extents, 0):
+                        key = getattr(entity, "class_name",
+                                      type(entity).__name__).lower().replace("_","")
+                        defaults = {
+                            "car":          (1.0, 0.75, 2.0),
+                            "trafficlight": (0.2, 0.6,  0.2),
+                            "trafficsign":  (0.3, 0.3,  0.1),
+                            "pedestrian":   (0.3, 0.9,  0.3),
+                        }
+                        hx, hy, hz = defaults.get(key, (1.0, 1.0, 1.0))
+                    else:
+                        extents = np.atleast_1d(np.array(extents, dtype=np.float32))
+                        hx, hy, hz = float(extents[0]), float(extents[1]), float(extents[2])
+
+                    hx *= float(scale[0])
+                    hy *= float(scale[1])
+                    hz *= float(scale[2])
+
+                    corners_local = np.array([
+                        [ hx,  hy,  hz],
+                        [ hx,  hy, -hz],
+                        [ hx, -hy,  hz],
+                        [ hx, -hy, -hz],
+                        [-hx,  hy,  hz],
+                        [-hx,  hy, -hz],
+                        [-hx, -hy,  hz],
+                        [-hx, -hy, -hz],
+                    ], dtype=np.float32)
+
+                rot = getattr(entity, "rotation_euler",
+                      getattr(entity, "rotation", [0,0,0]))
+                ry_deg = float(np.atleast_1d(rot)[1])
+                ry_rad = np.deg2rad(ry_deg)
+                cr, sr = np.cos(ry_rad), np.sin(ry_rad)
+                Ry = np.array([[ cr, 0, sr],
+                               [  0, 1,  0],
+                               [-sr, 0, cr]], dtype=np.float32)
+                corners_local = (Ry @ corners_local.T).T
+
+                corners_world = corners_local + pos
+
+                ext = np.array(active_cam.get_extrinsics(), dtype=np.float32)
+                ones = np.ones((8,1), dtype=np.float32)
+                corners_h = np.hstack([corners_world, ones])
+                corners_cam = (ext @ corners_h.T).T
+                cx = corners_cam[:, 0]
+                cy = corners_cam[:, 1]
+                cz = corners_cam[:, 2]
+
+                near = 0.1
+                valid = cz < -near
+                if "car" in type(entity).__name__.lower():
+                    alt_valid = cz > near
+                    _dbg("H1", "depth-sign-check", {
+                        "pos": pos,
+                        "cz_min": float(np.min(cz)),
+                        "cz_max": float(np.max(cz)),
+                        "valid_negz": int(np.count_nonzero(valid)),
+                        "valid_posz": int(np.count_nonzero(alt_valid)),
+                    })
+                    _dbg("H2", "transform-inputs", {
+                        "raw_scale": raw_scale,
+                        "scale": scale,
+                        "mesh_extents": extents if extents is not None else "None",
+                        "ry_deg": ry_deg,
+                        "rot_source": rot,
+                    })
+                if not valid.any():
+                    return [0, 0, 0, 0]
+
+                depth = -cz[valid]
+                K = np.array(active_cam.get_intrinsics(), dtype=np.float32)
+                fx, fy = K[0,0], K[1,1]
+                ppx, ppy = K[0,2], K[1,2]
+
+                px = fx * (cx[valid] / depth) + ppx
+                py_old = fy * (cy[valid] / depth) + ppy
+                py = fy * (-cy[valid] / depth) + ppy
+                if "car" in type(entity).__name__.lower():
+                    _dbg("H4", "y-axis-sign", {
+                        "py_old_minmax": [float(np.min(py_old)), float(np.max(py_old))],
+                        "py_new_minmax": [float(np.min(py)), float(np.max(py))],
+                        "used": "py_new_negated_cy",
+                    })
+
+                px = np.clip(px, 0, w)
+                py = np.clip(py, 0, h)
+
+                x0, y0 = int(np.min(px)), int(np.min(py))
+                x1, y1 = int(np.max(px)), int(np.max(py))
+                if "car" in type(entity).__name__.lower():
+                    _dbg("H3", "bbox-raw", {
+                        "bbox_xyxy": [x0, y0, x1, y1],
+                        "bbox_wh": [x1 - x0, y1 - y0],
+                        "px_minmax": [float(np.min(px)), float(np.max(px))],
+                        "py_minmax": [float(np.min(py)), float(np.max(py))],
+                        "touches_border": bool(x0 == 0 or y0 == 0 or x1 == w or y1 == h),
+                    })
+
+                if x1 - x0 < 4 or y1 - y0 < 4:
+                    return [0, 0, 0, 0]
+
+                return [x0, y0, x1, y1]
+
+            entity_bboxes = {}
+            for entity in self.scene.entities:
+                try:
+                    entity_bboxes[id(entity)] = project_entity_bbox(entity, projection, view, w, h)
+                except Exception:
+                    entity_bboxes[id(entity)] = [0, 0, 0, 0]
+
+            # Build camera and object dicts (same adapter code as viewer.py hook)
+            camera_params = {
+                "position":         active_cam.position.tolist(),
+                "target":           active_cam.target.tolist() if hasattr(active_cam, 'target') else (active_cam.position + active_cam.front).tolist(),
+                "up":               active_cam.up.tolist() if hasattr(active_cam, 'up') else [0,1,0],
+                "fov_deg":          active_cam.fov if hasattr(active_cam, 'fov') else 45.0,
+                "near":             near,
+                "far":              far,
+                "intrinsic_matrix": active_cam.get_intrinsics().tolist() if hasattr(active_cam, 'get_intrinsics') else np.eye(3).tolist(),
+                "extrinsic_matrix": active_cam.get_extrinsics().tolist() if hasattr(active_cam, 'get_extrinsics') else np.eye(4).tolist(),
+            }
+            objects = []
+            for entity in self.scene.entities:
+                obj_class = getattr(entity, "class_name", type(entity).__name__)
+                objects.append({
+                    "instance_id":     getattr(entity, "instance_id", id(entity)),
+                    "class_name":      obj_class,
+                    "position_world":  entity.position.tolist(),
+                    "rotation_euler":  getattr(entity, "rotation", [0, 0, 0]),
+                    "scale":           getattr(entity, "scale", [1, 1, 1]),
+                    "bbox_2d":         entity_bboxes.get(id(entity), [0, 0, 0, 0]),
+                    "visible":         getattr(entity, "visible", True),
+                    "occlusion_ratio": getattr(entity, "occlusion_ratio", 0.0),
+                    "annotate":        obj_class not in {"Entity", "entity"},
+                })
+            render_config = {
+                "resolution": [w, h],
+                "lighting":   "directional",
+                "num_lights": len(getattr(self.scene, "lights", [])),
+                "background": "road_scene",
+            }
+
+            paths = self.dataset_manager.begin_export(i)
+            
+            # Save copies to dataset paths (DatasetManager may not write files
+            # directly — ensure RGB and depth are saved to the canonical paths)
+            import cv2
+            cv2.imwrite(str(paths["image"]), cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+            np.save(str(paths["depth"]), depth)
+            cv2.imwrite(str(paths["mask"]), seg_mask)
+
+            self.dataset_manager.finish_scene(
+                scene_id=i,
+                camera_params=camera_params,
+                objects=objects,
+                render_config=render_config,
+                rgb_image=rgb,
+                depth_map=depth,
+                seg_mask=seg_mask,
+            )
+
+            print(f"[headless] scene {i+1}/{num_frames} exported → {paths['image']}")
+
+            GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, 0)
+
+        self._destroy_offscreen()
+        print(f"[headless] done. Dataset written to: {output}")
 
     def run(self):
         print("Controls: WASD + E/Q(C) move | Mouse look | TAB switch cam | R respawn | P export | G gen dataset | 1/2/3 mode | F fill")
@@ -290,10 +737,23 @@ class ViewerApp:
         glfw.terminate()
 
 
-def main():
-    app = ViewerApp(width=1280, height=720)
-    app.run()
-
-
 if __name__ == "__main__":
-    main()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="VisionDrive3D")
+    parser.add_argument("--headless",    action="store_true", help="Run offscreen, no window")
+    parser.add_argument("--frames",      type=int, default=10, help="Number of scenes to generate (headless only)")
+    parser.add_argument("--output",      type=str, default="./output_dataset", help="Dataset output directory (headless only)")
+    parser.add_argument("--width",       type=int, default=1280)
+    parser.add_argument("--height",      type=int, default=720)
+    args = parser.parse_args()
+
+    if not glfw.init():
+        raise RuntimeError("GLFW failed to initialize")
+
+    if args.headless:
+        app = ViewerApp(width=args.width, height=args.height, headless=True)
+        app.run_headless(num_frames=args.frames, output=args.output)
+    else:
+        app = ViewerApp(width=args.width, height=args.height, headless=False)
+        app.run()
