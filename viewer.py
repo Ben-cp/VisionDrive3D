@@ -164,7 +164,7 @@ class ViewerApp:
 
         # 2) Dynamic cars – Object Pool (5 cars, random car0/car1/car2)
         car_folders = ["assets/car0", "assets/car1", "assets/car2"]
-        num_cars = 5
+        num_cars = 7
         for i in range(num_cars):
             folder = random.choice(car_folders)
             car = Car(
