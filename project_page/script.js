@@ -4,6 +4,14 @@ function fmt(value, digits = 3) {
   return num.toFixed(digits);
 }
 
+function fmtMetric(value, digits = 3) {
+  const num = Number(value);
+  if (Number.isNaN(num) || !Number.isFinite(num)) return "-";
+  const abs = Math.abs(num);
+  if (abs > 0 && abs < 10 ** -digits) return num.toExponential(2);
+  return num.toFixed(digits);
+}
+
 function renderDatasetStats(meta) {
   const body = document.getElementById("dataset-stats-body");
   const splits = (meta && meta.splits) || {};
@@ -153,8 +161,8 @@ function renderBackboneTable(rows) {
 
     tr.innerHTML = `
       <td>${row.model}</td>
-      <td class="${getClass(rank50)}">${fmt(map50, 3)}</td>
-      <td class="${getClass(rank95)}">${fmt(map95, 3)}</td>
+      <td class="${getClass(rank50)}">${fmtMetric(map50, 3)}</td>
+      <td class="${getClass(rank95)}">${fmtMetric(map95, 3)}</td>
       <td class="${getClass(rankPrecision)}">${fmt(precision, 3)}</td>
       <td class="${getClass(rankRecall)}">${fmt(recall, 3)}</td>
       <td class="${getClass(rankSpeed)}">${fmt(speed, 1)}</td>
