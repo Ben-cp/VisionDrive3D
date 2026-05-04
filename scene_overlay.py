@@ -99,28 +99,28 @@ class SceneOverlay:
 
         self.building_entities = self._load_building_entities()
 
-    def _is_old_road_submesh(self, submesh: dict, index: int = 0) -> bool:
-        """
-        Heuristic lọc phần mặt đường cũ đã được cải tiến.
-        """
-        verts = np.asarray(submesh.get("vertices"), dtype=np.float32)
-        if verts.size == 0:
-            return True
-        vmin = np.min(verts, axis=0)
-        vmax = np.max(verts, axis=0)
-        extent = vmax - vmin
-        # Lấy thông số
-        height_y = float(extent[1])
-        lowest_y = float(vmin[1])
-        # ĐIỀU KIỆN MỚI: Chỉ cần mesh mỏng (cao độ thấp) VÀ nằm sát mặt đất
-        is_flat = height_y <= 3.5       # Nới lỏng: Cho phép vỉa hè/đường dày tới 3.5 đơn vị
-        is_on_ground = lowest_y <= 1.5  # Nới lỏng: Điểm thấp nhất nằm sát mốc 0
-        # Nếu muốn lọc theo Tên hoặc Material (Cách chính xác nhất):
-        # Bạn có thể kiểm tra submesh.get("name") hoặc ID material ở đây.
-        is_road = is_flat and is_on_ground
-        # Tắt comment dòng lệnh dưới đây nếu bạn muốn kiểm tra tại sao mặt đường vẫn lọt qua
-        print(f"Mesh {index:03d} | Height: {height_y:.2f} | Lowest Y: {lowest_y:.2f} | is_road: {is_road}")
-        return is_road
+    # def _is_old_road_submesh(self, submesh: dict, index: int = 0) -> bool:
+    #     """
+    #     Heuristic lọc phần mặt đường cũ đã được cải tiến.
+    #     """
+    #     verts = np.asarray(submesh.get("vertices"), dtype=np.float32)
+    #     if verts.size == 0:
+    #         return True
+    #     vmin = np.min(verts, axis=0)
+    #     vmax = np.max(verts, axis=0)
+    #     extent = vmax - vmin
+    #     # Lấy thông số
+    #     height_y = float(extent[1])
+    #     lowest_y = float(vmin[1])
+    #     # ĐIỀU KIỆN MỚI: Chỉ cần mesh mỏng (cao độ thấp) VÀ nằm sát mặt đất
+    #     is_flat = height_y <= 3.5       # Nới lỏng: Cho phép vỉa hè/đường dày tới 3.5 đơn vị
+    #     is_on_ground = lowest_y <= 1.5  # Nới lỏng: Điểm thấp nhất nằm sát mốc 0
+    #     # Nếu muốn lọc theo Tên hoặc Material (Cách chính xác nhất):
+    #     # Bạn có thể kiểm tra submesh.get("name") hoặc ID material ở đây.
+    #     is_road = is_flat and is_on_ground
+    #     # Tắt comment dòng lệnh dưới đây nếu bạn muốn kiểm tra tại sao mặt đường vẫn lọt qua
+    #     print(f"Mesh {index:03d} | Height: {height_y:.2f} | Lowest Y: {lowest_y:.2f} | is_road: {is_road}")
+    #     return is_road
 
     def _load_building_entities(self) -> list[Entity]:
         """
@@ -131,12 +131,12 @@ class SceneOverlay:
 
         entities: list[Entity] = []
         kept_count = 0
-        dropped_count = 0
+        # dropped_count = 0
 
         for idx, submesh in enumerate(scene_mesh.submeshes):
-            if self._is_old_road_submesh(submesh, idx):
-                dropped_count += 1
-                continue
+            # if self._is_old_road_submesh(submesh, idx):
+            #     dropped_count += 1
+            #     continue
 
             mesh_adapter = _SubMeshAdapter(submesh)
             ent = Entity(
@@ -150,8 +150,9 @@ class SceneOverlay:
             kept_count += 1
 
         print(
-            f"[SceneOverlay] scene submeshes: kept={kept_count}, filtered_old_road={dropped_count}"
+            f"[SceneOverlay] scene submeshes: kept={kept_count}"
         )
+        # , filtered_old_road={dropped_count}
         return entities
 
     @staticmethod
