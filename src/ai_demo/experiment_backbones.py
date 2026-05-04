@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 SCENE_IMAGE_RE = re.compile(r"scene_(\d+)\.png$")
-MODEL_NAMES = ["yolov8n", "yolov8s", "yolov8m", "rtdetr-l"]
+MODEL_NAMES = ["yolov8n", "yolov8m", "yolov8s", "rtdetr-l"]
 
 
 def project_root() -> Path:
@@ -38,6 +38,27 @@ def configure_ultralytics(root: Path) -> None:
 def resolve_pretrained_weight(root: Path, filename: str) -> str:
     local_path = root / "weights" / filename
     return str(local_path) if local_path.exists() else filename
+
+
+def write_runtime_dataset_yaml(dataset_root: Path, source_yaml: Path) -> Path:
+    lines = source_yaml.read_text(encoding="utf-8").splitlines()
+    out_lines: List[str] = []
+    replaced = False
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("path:"):
+            out_lines.append(f"path: {dataset_root}")
+            replaced = True
+        else:
+            out_lines.append(line)
+
+    if not replaced:
+        out_lines.insert(0, f"path: {dataset_root}")
+
+    out_yaml = dataset_root / "dataset_runtime.yaml"
+    out_yaml.write_text("\n".join(out_lines).rstrip() + "\n", encoding="utf-8")
+    return out_yaml
 
 
 def resolve_runtime_device(requested_device: str) -> str:
@@ -185,7 +206,7 @@ def plot_results(rows: Sequence[Dict[str, float]], out_png: Path) -> None:
     fig, (ax_bar, ax_scatter) = plt.subplots(1, 2, figsize=(12, 5), constrained_layout=True)
 
     ax_bar.bar(models, map50, color="#4A90D9")
-    ax_bar.set_title("mAP@50 by Backbone")
+    ax_bar.set_title("mAP@50 by Architecture")
     ax_bar.set_ylabel("mAP@50")
     ax_bar.set_ylim(0.0, max(map50) * 1.15 if map50 else 1.0)
     ax_bar.grid(axis="y", alpha=0.3)
@@ -206,7 +227,7 @@ def plot_results(rows: Sequence[Dict[str, float]], out_png: Path) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run detection backbone comparison on VisionDrive3D")
+    parser = argparse.ArgumentParser(description="Run detection architecture benchmark on VisionDrive3D")
     parser.add_argument("--dataset", type=str, default="./output_dataset")
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--imgsz", type=int, default=640)
@@ -224,6 +245,7 @@ def main() -> None:
     dataset_yaml = dataset_root / "dataset.yaml"
     if not dataset_yaml.exists():
         raise FileNotFoundError(f"Missing dataset config: {dataset_yaml}")
+    runtime_dataset_yaml = write_runtime_dataset_yaml(dataset_root, dataset_yaml)
 
     test_images = list_test_images(dataset_root)
     if not test_images:
@@ -245,7 +267,7 @@ def main() -> None:
 
     for model_name in MODEL_NAMES:
         weights_name = resolve_pretrained_weight(root, f"{model_name}.pt")
-        print(f"\n[INFO] Backbone experiment: {model_name}")
+        print(f"\n[INFO] Architecture experiment: {model_name}")
         try:
             model = YOLO(weights_name)
         except Exception as exc:
@@ -257,7 +279,7 @@ def main() -> None:
         try:
             used_batch = train_with_oom_fallback(
                 model,
-                data=str(dataset_yaml),
+                data=str(runtime_dataset_yaml),
                 epochs=args.epochs,
                 imgsz=args.imgsz,
                 batch=args.batch,
@@ -270,7 +292,12 @@ def main() -> None:
             continue
 
         try:
-            val_metrics = model.val(data=str(dataset_yaml), split="test", device=runtime_device, verbose=False)
+            val_metrics = model.val(
+                data=str(runtime_dataset_yaml),
+                split="test",
+                device=runtime_device,
+                verbose=False,
+            )
             metric_bundle = extract_detection_metrics(val_metrics)
         except Exception as exc:
             print(f"[WARN] Skipping {model_name}: validation failed: {exc}")
