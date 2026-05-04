@@ -17,16 +17,33 @@ class RGBRenderer:
             os.path.join(base_dir, "shaders", "phong.vert"),
             os.path.join(base_dir, "shaders", "phong.frag"),
         )
+        self.dimmed = False
+
+    def set_dimmed(self, dimmed: bool):
+        self.dimmed = bool(dimmed)
+
+    def toggle_dimmed(self) -> bool:
+        self.dimmed = not self.dimmed
+        return self.dimmed
 
     def render(self, scene, projection: np.ndarray, view: np.ndarray):
         GL.glUseProgram(self.shader.render_idx)
         uma = UManager(self.shader)
 
-        uma.upload_uniform_vector3fv(np.array([1.0, 1.0, 1.0], dtype=np.float32), "light_color")
+        if self.dimmed:
+            light_color = np.array([0.5, 0.5, 0.5], dtype=np.float32)
+            ambient_strength = 0.10
+            specular_strength = 0.08
+        else:
+            light_color = np.array([1.0, 1.0, 1.0], dtype=np.float32)
+            ambient_strength = 0.28
+            specular_strength = 0.35
+
+        uma.upload_uniform_vector3fv(light_color, "light_color")
         uma.upload_uniform_vector3fv(np.array([0.0, 8.0, 5.0], dtype=np.float32), "light_pos")
         uma.upload_uniform_scalar1f(64.0, "shininess")
-        uma.upload_uniform_scalar1f(0.28, "ambient_strength")
-        uma.upload_uniform_scalar1f(0.35, "specular_strength")
+        uma.upload_uniform_scalar1f(ambient_strength, "ambient_strength")
+        uma.upload_uniform_scalar1f(specular_strength, "specular_strength")
 
         for ent in scene.entities:
             ent.mesh.draw(projection, view, ent.world_matrix(), self.shader)
@@ -98,6 +115,12 @@ class RenderManager:
         if mode in {"RGB", "MASK", "DEPTH"}:
             self.mode = mode
 
+    def toggle_rgb_dimmed(self) -> bool:
+        return self.rgb_renderer.toggle_dimmed()
+
+    def is_rgb_dimmed(self) -> bool:
+        return self.rgb_renderer.dimmed
+
     @staticmethod
     def _reset_texture_state(shader=None):
         GL.glActiveTexture(GL.GL_TEXTURE0)
@@ -115,7 +138,13 @@ class RenderManager:
             self.rgb_renderer.render(self.scene, projection, view)
             self._reset_texture_state(self.rgb_renderer.shader)
             if self.scene_overlay:
-                self.scene_overlay.render(self.rgb_renderer.shader, projection, view, is_rgb=True)
+                self.scene_overlay.render(
+                    self.rgb_renderer.shader,
+                    projection,
+                    view,
+                    is_rgb=True,
+                    rgb_dimmed=self.is_rgb_dimmed(),
+                )
             self._reset_texture_state(self.rgb_renderer.shader)
 
         elif self.mode == "MASK":
@@ -158,7 +187,13 @@ class RenderManager:
             self._reset_texture_state(self.rgb_renderer.shader)
             self.rgb_renderer.render(self.scene, projection, view)
             if self.scene_overlay:
-                self.scene_overlay.render(self.rgb_renderer.shader, projection, view, is_rgb=True)
+                self.scene_overlay.render(
+                    self.rgb_renderer.shader,
+                    projection,
+                    view,
+                    is_rgb=True,
+                    rgb_dimmed=self.is_rgb_dimmed(),
+                )
             self._reset_texture_state(self.rgb_renderer.shader)
             GL.glFinish()
             rgb = self.exporter.read_rgb_buffer(w, h)

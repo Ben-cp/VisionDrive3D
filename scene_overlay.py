@@ -184,7 +184,14 @@ class SceneOverlay:
             offset = np.asarray(item.get("offset", [0.0, 0.0, 0.0]), dtype=np.float32)
             yield T.translate(offset).astype(np.float32)
 
-    def render(self, shader_program, projection: np.ndarray, view: np.ndarray, is_rgb: bool = True):
+    def render(
+        self,
+        shader_program,
+        projection: np.ndarray,
+        view: np.ndarray,
+        is_rgb: bool = True,
+        rgb_dimmed: bool = False,
+    ):
         state_before = self._capture_gl_state()
 
         # Tính khung cắt (clip_box)
@@ -200,7 +207,15 @@ class SceneOverlay:
         # 1) Vẽ ngã tư nền (Truyền cờ is_rgb xuống)
         eye_pos = self._extract_eye_pos_from_view(view)
         for drawable in self.base_junction_drawables:
-            drawable.draw(projection, view, shader_program, is_rgb=is_rgb, eye_pos=eye_pos, clip_box=clip_box)
+            drawable.draw(
+                projection,
+                view,
+                shader_program,
+                is_rgb=is_rgb,
+                eye_pos=eye_pos,
+                clip_box=clip_box,
+                rgb_dimmed=rgb_dimmed,
+            )
 
         # 2) Vẽ nhà dân bằng shader của viewer.py
         GL.glUseProgram(int(shader_program.render_idx))

@@ -206,6 +206,14 @@ class ViewerApp:
             self.render_manager.set_mode("DEPTH")
             return
 
+        if key == glfw.KEY_T:
+            if self.render_manager.mode == "RGB":
+                is_dimmed = self.render_manager.toggle_rgb_dimmed()
+                print("RGB lighting: DIMMED" if is_dimmed else "RGB lighting: NORMAL")
+            else:
+                print("Lighting toggle is available only in RGB mode.")
+            return
+
         if key == glfw.KEY_R:
             # Reset all traffic routes
             traffic_cars = self.scene.get_traffic_cars()
@@ -697,7 +705,7 @@ class ViewerApp:
         print(f"[headless] done. Dataset written to: {output}")
 
     def run(self):
-        print("Controls: WASD + E/Q(C) move | Mouse look | TAB switch cam | R respawn | P export | G gen dataset | 1/2/3 mode | F fill")
+        print("Controls: WASD + E/Q(C) move | Mouse look | TAB switch cam | R respawn | P export | G gen dataset | 1/2/3 mode | T toggle RGB light | F fill")
 
         while not glfw.window_should_close(self.window):
             now = glfw.get_time()
@@ -716,7 +724,10 @@ class ViewerApp:
             w, h = glfw.get_framebuffer_size(self.window)
             GL.glViewport(0, 0, w, h)
             # Default clearing for RGB interactive viewing
-            GL.glClearColor(0.18, 0.20, 0.24, 1.0)
+            if self.render_manager.mode == "RGB" and self.render_manager.is_rgb_dimmed():
+                GL.glClearColor(0.07, 0.08, 0.10, 1.0)
+            else:
+                GL.glClearColor(0.18, 0.20, 0.24, 1.0)
             if self.render_manager.mode != "MASK":
                 GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
 

@@ -63,6 +63,7 @@ uniform vec3 eye_pos;
 uniform sampler2D diffuse_map; // Đọc ảnh texture
 uniform bool use_texture;      // Cờ kiểm tra xem lưới có texture không
 uniform vec3 base_color;
+uniform float lighting_scale;
 
 uniform bool use_clip;
 uniform vec2 clip_x; // vec2(min_x, max_x)
@@ -97,7 +98,7 @@ void main() {
     vec3 diffuse = 0.70 * diff * albedo;
     vec3 specular = 0.35 * spec * vec3(1.0);
     
-    fragColor = vec4(ambient + diffuse + specular, 1.0);
+    fragColor = vec4((ambient + diffuse + specular) * lighting_scale, 1.0);
 }
 """
 
@@ -394,7 +395,16 @@ class RoadMeshDrawable:
         
         self.vao.add_ebo(self.indices)
 
-    def draw(self, projection: np.ndarray, view: np.ndarray, viewer_shader, is_rgb: bool = True, eye_pos: np.ndarray = None, clip_box: dict = None):
+    def draw(
+        self,
+        projection: np.ndarray,
+        view: np.ndarray,
+        viewer_shader,
+        is_rgb: bool = True,
+        eye_pos: np.ndarray = None,
+        clip_box: dict = None,
+        rgb_dimmed: bool = False,
+    ):
         
         if is_rgb:
             # ==========================================
@@ -408,6 +418,8 @@ class RoadMeshDrawable:
             self.uma.upload_uniform_matrix4fv(self.model, "model", True)
             self.uma.upload_uniform_vector3fv(self.color, "base_color")
             self.uma.upload_uniform_vector3fv(np.array([0.6, -0.9, -0.35], dtype=np.float32), "light_dir")
+            lighting_scale = 0.45 if rgb_dimmed else 1.0
+            self.uma.upload_uniform_scalar1f(float(lighting_scale), "lighting_scale")
             
             if eye_pos is not None:
                 self.uma.upload_uniform_vector3fv(np.asarray(eye_pos, dtype=np.float32), "eye_pos")
