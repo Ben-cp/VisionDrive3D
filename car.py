@@ -106,7 +106,7 @@ class Car(Entity):
     # Waypoint-following update
     # ------------------------------------------------------------------
     def update(self, dt: float):
-        dt = float(max(0.0, min(dt, 0.1)))
+        # dt = float(max(0.0, min(dt, 0.1)))
 
         if not self.is_active or not self.waypoints:
             return

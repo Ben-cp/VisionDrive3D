@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shlex
 import shutil
@@ -43,6 +44,10 @@ def list_split_images(dataset_root: Path, split: str) -> List[Path]:
 
 
 def resolve_default_detection_weights(root: Path, dataset_root: Path) -> Path:
+    default_root_checkpoint = root / "yolov8s.pt"
+    if default_root_checkpoint.exists():
+        return default_root_checkpoint.resolve()
+
     trained_models_path = dataset_root / "trained_models.json"
     if trained_models_path.exists():
         payload = json.loads(trained_models_path.read_text(encoding="utf-8"))
@@ -149,6 +154,119 @@ def compose_triptych(input_bgr, pred_bgr, gt_bgr):
     return cv2.hconcat([p1, p2, p3])
 
 
+def configure_ultralytics(root: Path) -> None:
+    config_dir = root / ".ultralytics"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("YOLO_CONFIG_DIR", str(config_dir))
+
+
+def draw_prediction_overlay(image_bgr, boxes, scores, title: str):
+    overlay = image_bgr.copy()
+    cv2.rectangle(overlay, (0, 0), (overlay.shape[1], 38), (0, 0, 0), thickness=-1)
+    cv2.putText(
+        overlay,
+        title,
+        (12, 26),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.8,
+        (255, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
+    for (x1, y1, x2, y2), score in zip(boxes, scores):
+        cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 255, 0), 2)
+        cv2.putText(
+            overlay,
+            f"car {float(score):.2f}",
+            (x1, max(48, y1 - 6)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 255, 0),
+            1,
+            cv2.LINE_AA,
+        )
+    return overlay
+
+
+class DetectorAdapter:
+    def predict_overlay(self, image_bgr):
+        raise NotImplementedError
+
+
+class UltralyticsAdapter(DetectorAdapter):
+    def __init__(self, root: Path, weights_path: Path, device: str):
+        try:
+            from ultralytics import YOLO
+        except ImportError as exc:
+            raise RuntimeError("ultralytics is not installed in this environment.") from exc
+
+        configure_ultralytics(root)
+        self.model = YOLO(str(weights_path))
+        self.device = device
+        raw_names = getattr(self.model, "names", {})
+        if isinstance(raw_names, dict):
+            self.names = {int(k): str(v).lower() for k, v in raw_names.items()}
+        else:
+            self.names = {idx: str(v).lower() for idx, v in enumerate(raw_names)}
+
+    def predict_overlay(self, image_bgr):
+        result = self.model(image_bgr, device=self.device, verbose=False)[0]
+        boxes = []
+        scores = []
+        if result.boxes is not None and len(result.boxes) > 0:
+            xyxy = result.boxes.xyxy.detach().cpu().numpy()
+            conf = result.boxes.conf.detach().cpu().numpy()
+            cls_ids = result.boxes.cls.detach().cpu().numpy().astype(int)
+            for box, score, cls_id in zip(xyxy, conf, cls_ids):
+                if self.names.get(int(cls_id), "") != "car":
+                    continue
+                boxes.append(tuple(int(round(v)) for v in box.tolist()))
+                scores.append(float(score))
+        return draw_prediction_overlay(image_bgr, boxes, scores, "Inference")
+
+
+class FasterRCNNAdapter(DetectorAdapter):
+    def __init__(self, device: str):
+        import torch
+        from torchvision.models.detection import fasterrcnn_resnet50_fpn_v2
+
+        self.torch = torch
+        device_str = "cpu" if device == "cpu" else (f"cuda:{device}" if device.isdigit() else device)
+        self.device = torch.device(device_str)
+        self.model = fasterrcnn_resnet50_fpn_v2(weights="DEFAULT")
+        self.model.to(self.device)
+        self.model.eval()
+        self.car_label_id = 3
+
+    def predict_overlay(self, image_bgr):
+        image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+        tensor = self.torch.from_numpy(image_rgb.transpose(2, 0, 1)).float() / 255.0
+        tensor = tensor.to(self.device)
+        with self.torch.no_grad():
+            outputs = self.model([tensor])[0]
+
+        labels = outputs["labels"].detach().cpu().numpy()
+        boxes_xyxy = outputs["boxes"].detach().cpu().numpy()
+        scores_conf = outputs["scores"].detach().cpu().numpy()
+
+        boxes = []
+        scores = []
+        for label, box, score in zip(labels, boxes_xyxy, scores_conf):
+            if int(label) != self.car_label_id:
+                continue
+            boxes.append(tuple(int(round(v)) for v in box.tolist()))
+            scores.append(float(score))
+        return draw_prediction_overlay(image_bgr, boxes, scores, "Inference")
+
+
+def load_detector(root: Path, weights_arg: str | None, device: str, dataset_root: Path) -> tuple[DetectorAdapter, str]:
+    if weights_arg == "fasterrcnn_resnet50_fpn_v2":
+        return FasterRCNNAdapter(device=device), weights_arg
+
+    weights_path = resolve_weights(weights_arg, root, dataset_root)
+    return UltralyticsAdapter(root=root, weights_path=weights_path, device=device), str(weights_path)
+
+
 def ffmpeg_command(frames_dir: Path, fps: int, out_path: Path) -> str:
     return (
         "ffmpeg -y "
@@ -161,9 +279,14 @@ def ffmpeg_command(frames_dir: Path, fps: int, out_path: Path) -> str:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Create Input/Inference/GT sequence and video")
-    parser.add_argument("--dataset", type=str, default="./output_dataset")
+    parser.add_argument("--dataset", type=str, default="./test_visiondrive3d")
     parser.add_argument("--split", type=str, default="test")
-    parser.add_argument("--weights", type=str, default=None, help="Detection model weights path")
+    parser.add_argument(
+        "--weights",
+        type=str,
+        default=None,
+        help="Detection model weights path or 'fasterrcnn_resnet50_fpn_v2' for torchvision pretrained inference",
+    )
     parser.add_argument("--device", type=str, default="0")
     parser.add_argument("--max-frames", type=int, default=120)
     parser.add_argument("--fps", type=int, default=10)
@@ -199,15 +322,9 @@ def main() -> None:
     if not video_out.is_absolute():
         video_out = (root / video_out).resolve()
 
-    try:
-        from ultralytics import YOLO
-    except ImportError as exc:
-        raise RuntimeError("ultralytics is not installed in this environment.") from exc
+    detector, weights_label = load_detector(root=root, weights_arg=args.weights, device=args.device, dataset_root=dataset_root)
 
-    weights_path = resolve_weights(args.weights, root, dataset_root)
-    model = YOLO(str(weights_path))
-
-    print(f"[INFO] Using weights: {weights_path}")
+    print(f"[INFO] Using weights/model: {weights_label}")
     print(f"[INFO] Frames: {len(selected)} ({selected[0].name} .. {selected[-1].name})")
     print(f"[INFO] Output dir: {out_dir}")
 
@@ -217,8 +334,7 @@ def main() -> None:
             print(f"[WARN] Skipping unreadable image: {img_path}")
             continue
 
-        result = model(str(img_path), device=args.device, verbose=False)[0]
-        pred_bgr = result.plot()
+        pred_bgr = detector.predict_overlay(input_bgr)
 
         h, w = input_bgr.shape[:2]
         gt_label_path = label_path_for_image(dataset_root, args.split, img_path.stem)

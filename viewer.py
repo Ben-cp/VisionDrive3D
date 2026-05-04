@@ -381,6 +381,7 @@ class ViewerApp:
         Run dataset generation fully offscreen. No window is shown.
         Renders num_frames scenes and exports them via DatasetManager.
         """
+        DT = 1
         w = self._offscreen_width
         h = self._offscreen_height
 
@@ -388,27 +389,34 @@ class ViewerApp:
 
         for i in range(num_frames):
             GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self._fbo)
-            GL.glClearColor(0.18, 0.20, 0.24, 1.0)
-            GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
 
-            # Randomize scene for variety (reuse existing scene logic)
-            self.scene.spawn_cars_on_lanes(
-                lanes_config=self._default_lanes_config(),
-                num_cars=len(self.scene.get_dynamic_entities()),
-                scale_range=(0.9, 1.15),
-                sat_padding=0.20,
-                max_retry_per_car=120,
-            )
+            # Legacy dataset randomization path; keep disabled so headless
+            # matches the persistent simulation behavior used by run().
+            # self.scene.spawn_cars_on_lanes(
+            #     lanes_config=self._default_lanes_config(),
+            #     num_cars=len(self.scene.get_dynamic_entities()),
+            #     scale_range=(0.9, 1.15),
+            #     sat_padding=0.20,
+            #     max_retry_per_car=120,
+            # )
             self._ensure_camera_host()
-            self.traffic_manager.update(0.016)
-            self.scene.update(0.016)
 
             active_cam = self.camera_manager.get_active_camera()
-            # To get ground alignment properly if needed
-            active_cam.update_ground_alignment(self.scene, 0.016)
-            
-            projection = active_cam.get_projection_matrix(w / h) if hasattr(active_cam, 'get_projection_matrix') else active_cam.projection_matrix()
-            view       = active_cam.get_view_matrix() if hasattr(active_cam, 'get_view_matrix') else active_cam.view_matrix()
+            active_cam.update_ground_alignment(self.scene, DT)
+
+            GL.glViewport(0, 0, w, h)
+            GL.glClearColor(0.18, 0.20, 0.24, 1.0)
+            if self.render_manager.mode != "MASK":
+                GL.glClear(GL.GL_COLOR_BUFFER_BIT | GL.GL_DEPTH_BUFFER_BIT)
+
+            projection = active_cam.projection_matrix()
+            if active_cam.is_free_cam:
+                active_cam.resolution = (w, h)
+                projection = active_cam.projection_matrix()
+
+            self.traffic_manager.update(DT)
+            self.scene.update(DT)
+            view = active_cam.view_matrix()
 
             # 1. Main render
             self.render_manager.draw(projection, view)

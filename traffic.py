@@ -1144,7 +1144,7 @@ class TrafficManager:
         2. Respawn only when a spawn lane is clear.
         3. Update following and intersection speed limits.
         """
-        dt = float(max(0.0, min(dt, 0.1)))
+        # dt = float(max(0.0, min(dt, 0.1)))
         self._sim_time += dt
 
         for car in self.cars:

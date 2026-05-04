@@ -112,7 +112,11 @@
         <div class="section-label"><span></span><p>Results</p><span></span></div>
         <h2>Results</h2>
 
-        <h3>Detection and Segmentation Comparison</h3>
+        <h3>Cross-Dataset Pretrained 2D Detector Benchmark</h3>
+        <p class="notice">
+          Evaluation on the new <code>test_visiondrive3d</code> dataset using three pretrained detectors:
+          YOLOv8s, RT-DETR-L, and Faster R-CNN ResNet50 FPN v2.
+        </p>
         <div class="table-wrap panel">
           <table class="table" id="results-table">
             <thead>
@@ -125,6 +129,78 @@
               </tr>
             </thead>
             <tbody id="results-body"></tbody>
+          </table>
+        </div>
+
+        <h3>Cross-Dataset Benchmark Videos</h3>
+        <div class="latest-grid">
+          <figure class="panel">
+            <video controls preload="metadata" style="width: 250%;">
+              <source src="../test_visiondrive3d/ai_results/yolov8s_test.mp4" type="video/mp4" />
+            </video>
+            <figcaption>YOLOv8s inference video on <code>test_visiondrive3d</code>.</figcaption>
+          </figure>
+          <br>
+          <figure class="panel">
+            <video controls preload="metadata" style="width: 250%;">
+              <source src="../test_visiondrive3d/ai_results/rtdetr_test.mp4" type="video/mp4" />
+            </video>
+            <figcaption>RT-DETR-L inference video on <code>test_visiondrive3d</code>.</figcaption>
+          </figure>
+          <br>
+          <figure class="panel">
+            <video controls preload="metadata" style="width: 250%;">
+              <source src="../test_visiondrive3d/ai_results/fasterrcnn_test.mp4" type="video/mp4" />
+            </video>
+            <figcaption>Faster R-CNN ResNet50 FPN v2 inference video on <code>test_visiondrive3d</code>.</figcaption>
+          </figure>
+        </div>
+
+        <h3>Legacy Synthetic Fine-Tuning Comparison</h3>
+        <p class="notice">
+          Original in-domain synthetic benchmark retained for comparison with the new cross-dataset experiment.
+        </p>
+        <div class="table-wrap panel">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Model</th>
+                <th>Type</th>
+                <th>mAP@50</th>
+                <th>mAP@50-95</th>
+                <th>Speed (ms)</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>YOLOv8n (baseline)</td>
+                <td>Detection</td>
+                <td>0.024</td>
+                <td>0.008</td>
+                <td>10.5</td>
+              </tr>
+              <tr>
+                <td>YOLOv8n (fine-tuned)</td>
+                <td>Detection</td>
+                <td>0.989</td>
+                <td>0.856</td>
+                <td>10.5</td>
+              </tr>
+              <tr>
+                <td>YOLOv8n-seg (baseline)</td>
+                <td>Segmentation</td>
+                <td>0.017</td>
+                <td>0.005</td>
+                <td>10.3</td>
+              </tr>
+              <tr>
+                <td>YOLOv8n-seg (fine-tuned)</td>
+                <td>Segmentation</td>
+                <td>0.870</td>
+                <td>0.545</td>
+                <td>11.3</td>
+              </tr>
+            </tbody>
           </table>
         </div>
 

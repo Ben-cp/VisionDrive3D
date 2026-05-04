@@ -172,8 +172,9 @@ def sync_project_page_assets(dataset_root: Path, root: Path) -> None:
 
     qualitative_src = dataset_root / "ai_results" / "qualitative"
     if qualitative_src.exists():
-        for img_path in sorted(qualitative_src.glob("*.png")):
-            safe_copy(img_path, assets_qual / img_path.name)
+        for img_path in sorted(qualitative_src.rglob("*.png")):
+            rel_path = img_path.relative_to(qualitative_src)
+            safe_copy(img_path, assets_qual / rel_path)
     else:
         print(f"[WARN] Qualitative directory not found: {qualitative_src}")
 

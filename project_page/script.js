@@ -23,9 +23,9 @@ function renderDatasetStats(meta) {
   tr.innerHTML = `
     <td>${resolution.replace("x", "×")}</td>
     <td>${classes.join(", ")}</td>
-    <td>${splits.train ?? "-"}</td>
-    <td>${splits.val ?? "-"}</td>
-    <td>${splits.test ?? "-"}</td>
+    <td>${splits.train != null ? splits.train : "-"}</td>
+    <td>${splits.val != null ? splits.val : "-"}</td>
+    <td>${splits.test != null ? splits.test : "-"}</td>
     <td>COCO+YOLO</td>
   `;
   body.appendChild(tr);
@@ -41,28 +41,13 @@ function renderResultsTable(data) {
   const body = document.getElementById("results-body");
   body.innerHTML = "";
 
-  const rows = [
-    {
-      model: "YOLOv8n (baseline)",
-      type: "Detection",
-      ...data.detection.baseline,
-    },
-    {
-      model: "YOLOv8n (fine-tuned)",
-      type: "Detection",
-      ...data.detection.finetuned,
-    },
-    {
-      model: "YOLOv8n-seg (baseline)",
-      type: "Segmentation",
-      ...data.segmentation.baseline,
-    },
-    {
-      model: "YOLOv8n-seg (fine-tuned)",
-      type: "Segmentation",
-      ...data.segmentation.finetuned,
-    },
-  ];
+  const rows = Array.isArray(data.models) ? data.models : [];
+  if (!rows.length) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td colspan="5" class="notice">No detection benchmark data found.</td>`;
+    body.appendChild(tr);
+    return;
+  }
 
   const allMap50 = rows.map((r) => Number(r.mAP50 || 0));
   const allMap95 = rows.map((r) => Number(r.mAP50_95 || 0));
@@ -191,10 +176,9 @@ function renderQualitative(meta) {
 
     const cards = [
       { label: `${stem} • RGB Input`, file: `assets/images/qualitative/input_${stem}.png` },
-      { label: `${stem} • Baseline Det`, file: `assets/images/qualitative/detection_baseline_${stem}.png` },
-      { label: `${stem} • Fine-tuned Det`, file: `assets/images/qualitative/detection_finetuned_${stem}.png` },
-      { label: `${stem} • Baseline Seg`, file: `assets/images/qualitative/seg_baseline_${stem}.png` },
-      { label: `${stem} • Fine-tuned Seg`, file: `assets/images/qualitative/seg_finetuned_${stem}.png` },
+      { label: `${stem} • YOLOv8s`, file: `assets/images/qualitative/yolov8s/${stem}.png` },
+      { label: `${stem} • RT-DETR-L`, file: `assets/images/qualitative/rtdetr_l/${stem}.png` },
+      { label: `${stem} • Faster R-CNN`, file: `assets/images/qualitative/fasterrcnn_resnet50_fpn_v2/${stem}.png` },
     ];
 
     cards.forEach((card) => {
@@ -212,10 +196,27 @@ function renderQualitative(meta) {
 }
 
 async function loadResults() {
+  const candidates = [
+    "assets/data/results.json",
+    "../test_visiondrive3d/results.json",
+  ];
+
   try {
-    const response = await fetch("assets/data/results.json");
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const data = await response.json();
+    let data = null;
+    let lastError = null;
+
+    for (const path of candidates) {
+      try {
+        const response = await fetch(path);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        data = await response.json();
+        break;
+      } catch (err) {
+        lastError = err;
+      }
+    }
+
+    if (!data) throw lastError || new Error("No results source found");
 
     renderDatasetStats(data.meta || {});
     renderResultsTable(data);
@@ -230,11 +231,28 @@ async function loadResults() {
 }
 
 async function loadBackboneCsv() {
+  const candidates = [
+    "assets/data/backbone_comparison.csv",
+    "../test_visiondrive3d/backbone_comparison.csv",
+  ];
+
   try {
-    const response = await fetch("assets/data/backbone_comparison.csv");
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const text = await response.text();
-    const rows = parseCsv(text);
+    let rows = null;
+    let lastError = null;
+
+    for (const path of candidates) {
+      try {
+        const response = await fetch(path);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const text = await response.text();
+        rows = parseCsv(text);
+        break;
+      } catch (err) {
+        lastError = err;
+      }
+    }
+
+    if (!rows) throw lastError || new Error("No CSV source found");
     renderBackboneTable(rows);
   } catch (err) {
     console.error(err);

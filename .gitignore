@@ -9,3 +9,5 @@ weights/
 .ultralytics/
 runs/
 *.pt
+
+test_visiondrive3d/
